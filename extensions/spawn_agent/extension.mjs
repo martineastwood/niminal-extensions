@@ -45,6 +45,41 @@ send({
 const DEFAULT_TOOLS = 'read,grep,glob,ls,skill'
 const timeoutSeconds = Number(process.env.SPAWN_AGENT_TIMEOUT_SECONDS) || 30 * 60
 
+// Live subagents, so an exiting niminal does not leave them running.
+const running = new Set()
+// The single in-flight cleanup, shared by every stop trigger below.
+let stopping = null
+// A subagent gets this long to exit after SIGTERM before it is SIGKILLed. It
+// has to fit in the 3s niminal waits before it kills this extension, otherwise
+// niminal ends the extension mid-cleanup and the subagent survives it.
+const stopGraceMs = 1500
+
+function stopTree(child) {
+  if (!child || child.pid === undefined) return Promise.resolve()
+  return new Promise((resolve) => {
+    const finish = () => {
+      // A subagent that ignores SIGTERM has to be killed outright. It stays in
+      // this extension's process group, so niminal kills it too if it ends this
+      // extension before the escalation below runs.
+      try { child.kill('SIGKILL') } catch {}
+      running.delete(child)
+      resolve()
+    }
+    if (child.exitCode !== null || child.signalCode !== null) return finish()
+    // Let niminal close its extensions and cancel active tools itself.
+    child.kill('SIGTERM')
+    const escalate = setTimeout(finish, stopGraceMs)
+    child.once('close', () => { clearTimeout(escalate); finish() })
+  })
+}
+
+function stopAll() {
+  // niminal sends "shutdown" and closes stdin, so both triggers race. Reusing
+  // one pass keeps the kill alive instead of exiting before it finishes.
+  stopping ??= Promise.all([...running].map(stopTree))
+  return stopping
+}
+
 function formatTokens(n) {
   return n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(n)
 }
@@ -68,6 +103,8 @@ function runSubagent(id, task, label, tools) {
     const bin = resolveNiminalBin()
     let child
     try {
+      // Not detached: the subagent shares this extension's process group, so a
+      // niminal that gives up on this extension still kills the subagent.
       child = spawn(bin,
         ['--mode', 'json', '--no-session', '--tools', tools, task],
         { cwd: workspace, stdio: ['ignore', 'pipe', 'pipe'] })
@@ -75,6 +112,7 @@ function runSubagent(id, task, label, tools) {
       resolve({ text: `spawn_agent could not start niminal: ${err.message}`, isError: true })
       return
     }
+    running.add(child)
 
     const progress = (text) =>
       send({ type: 'tool_update', id, content: `[${label}] ${text}` })
@@ -85,8 +123,9 @@ function runSubagent(id, task, label, tools) {
     let finalText = ''
     let lastError = ''
     let stderrTail = ''
+    let stopped = false
 
-    const timer = setTimeout(() => child.kill('SIGKILL'), timeoutSeconds * 1000)
+    const timer = setTimeout(() => { stopped = true; stopTree(child) }, timeoutSeconds * 1000)
     timer.unref?.()
 
     readline.createInterface({ input: child.stdout }).on('line', (line) => {
@@ -114,11 +153,13 @@ function runSubagent(id, task, label, tools) {
 
     child.on('error', (err) => {
       clearTimeout(timer)
+      running.delete(child)
       resolve({ text: `spawn_agent could not run niminal: ${err.message}`, isError: true })
     })
 
     child.on('close', (code) => {
       clearTimeout(timer)
+      running.delete(child)
       if (finalText) {
         resolve({
           text: `${finalText}\n\n---\nsubagent usage: ${formatTokens(inputTokens)} in / ` +
@@ -127,7 +168,7 @@ function runSubagent(id, task, label, tools) {
         })
       } else if (lastError) {
         resolve({ text: `subagent failed: ${lastError}`, isError: true })
-      } else if (code === null) {
+      } else if (stopped || code === null) {
         resolve({ text: `subagent was killed after ${Math.round(timeoutSeconds / 60)} minutes without finishing`, isError: true })
       } else if (code === 0) {
         resolve({ text: 'subagent finished without a report', isError: true })
@@ -161,7 +202,8 @@ async function handleTool(message) {
   })
 }
 
-readline.createInterface({ input: process.stdin }).on('line', (line) => {
+const input = readline.createInterface({ input: process.stdin })
+input.on('line', (line) => {
   if (!line.trim()) return
   let message
   try { message = JSON.parse(line) } catch { return }
@@ -178,8 +220,12 @@ readline.createInterface({ input: process.stdin }).on('line', (line) => {
     // Nothing to clean up: a timeout killed child already reported, and
     // in-flight runs answer through their normal close handler.
   } else if (message.type === 'shutdown') {
-    process.exit(0)
+    stopAll().then(() => process.exit(0))
   } else if (message.id !== undefined) {
     send({ type: 'response', id: message.id })
   }
+})
+// niminal may exit without asking (killed, or the terminal is gone).
+input.on('close', () => {
+  stopAll().then(() => process.exit(0))
 })

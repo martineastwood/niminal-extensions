@@ -75,3 +75,5 @@ and what to report.
   per-call model selection yet.
 - The extension targets POSIX. On Windows, wrap `extension.mjs` in a `.cmd`
   that calls `node "%~dp0extension.mjs" %*`.
+- Running subagents are stopped when niminal exits. A subagent that ignores
+  `SIGTERM` gets 1.5 seconds before it is killed.
