@@ -1,0 +1,5 @@
+{
+  "name": "spawn_agent",
+  "command": ["./extension.mjs"],
+  "response_timeout_seconds": null
+}

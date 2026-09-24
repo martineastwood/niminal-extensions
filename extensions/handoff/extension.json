@@ -1,0 +1,5 @@
+{
+  "name": "handoff",
+  "command": ["./extension.py"],
+  "response_timeout_seconds": 30
+}
