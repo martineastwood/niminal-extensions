@@ -44,11 +44,11 @@ Read the source of anything you install, and only install add-ons you trust.
 
 ## Install an extension
 
-Copy the extension you want into your global extensions folder and mark it
-executable. If you build niminal from source, this directory lives at
-`extensions_and_tools/` in the niminal repository:
+Clone this repository, then copy the extension you want into your global
+extensions folder and mark it executable:
 
 ```bash
+git clone https://github.com/martineastwood/extensions_and_tools.git
 cp -r extensions_and_tools/extensions/pirate ~/.niminal/extensions/
 chmod +x ~/.niminal/extensions/pirate/extension.py
 ```
