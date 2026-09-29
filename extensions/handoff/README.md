@@ -17,7 +17,6 @@ Copy this directory into a niminal extension root:
 
 ```bash
 cp -r handoff ~/.niminal/extensions/
-chmod +x ~/.niminal/extensions/handoff/extension.py
 ```
 
 Restart niminal or run `/reload`.
@@ -32,7 +31,8 @@ Describe the work you want to continue in the new session:
 
 niminal generates a self-contained prompt from the effective conversation
 context. If the session was compacted, that context includes the latest summary
-and the messages retained after it.
+and the messages retained after it. The footer shows `handoff generating` while
+the model works.
 
 Edit and save the prompt when your editor opens. niminal then starts a clean
 session and places the result in the composer. Review it and press Enter when you

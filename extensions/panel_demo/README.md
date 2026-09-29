@@ -15,7 +15,6 @@ Copy this directory into a niminal extension root:
 
 ```bash
 cp -r panel_demo ~/.niminal/extensions/
-chmod +x ~/.niminal/extensions/panel_demo/extension.py
 ```
 
 Restart niminal or run `/reload`.

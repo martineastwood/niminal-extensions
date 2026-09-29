@@ -19,7 +19,6 @@ Copy this directory into a niminal extension root:
 
 ```bash
 cp -r todo ~/.niminal/extensions/
-chmod +x ~/.niminal/extensions/todo/extension.py
 ```
 
 Restart niminal or run `/reload`.

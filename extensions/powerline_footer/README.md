@@ -13,7 +13,6 @@ Copy this directory into a niminal extension root:
 
 ```bash
 cp -r powerline_footer ~/.niminal/extensions/
-chmod +x ~/.niminal/extensions/powerline_footer/extension.py
 ```
 
 Restart niminal or run `/reload`.

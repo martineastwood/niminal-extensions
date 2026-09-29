@@ -24,7 +24,6 @@ Copy this directory into a niminal extensions root:
 
 ```bash
 cp -r herdr ~/.niminal/extensions/
-chmod +x ~/.niminal/extensions/herdr/extension.py
 ```
 
 Restart niminal or run `/reload`.

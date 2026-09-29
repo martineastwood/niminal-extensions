@@ -18,6 +18,7 @@ lifecycle events like the start and end of a turn.
 
 | Extension | What it does | Docs |
 | --- | --- | --- |
+| [btw](./extensions/btw/) | Add `/btw` to ask a side question without touching the main conversation | [README](./extensions/btw/README.md) |
 | [handoff](./extensions/handoff/) | Carry context from a long conversation into a clean session | [README](./extensions/handoff/README.md) |
 | [herdr](./extensions/herdr/) | Report niminal's state to a [Herdr](https://herdr.dev) pane | [README](./extensions/herdr/README.md) |
 | [panel_demo](./extensions/panel_demo/) | Add `/panel_demo` to show a widget panel with action buttons | [README](./extensions/panel_demo/README.md) |
@@ -46,13 +47,15 @@ Read the source of anything you install, and only install add-ons you trust.
 ## Install an extension
 
 Clone this repository, then copy the extension you want into your global
-extensions folder and mark it executable:
+extensions folder:
 
 ```bash
 git clone https://github.com/martineastwood/niminal-extensions.git
 cp -r niminal-extensions/extensions/pirate ~/.niminal/extensions/
-chmod +x ~/.niminal/extensions/pirate/extension.py
 ```
+
+`cp -r` keeps the executable bit every add-on needs. If you downloaded a zip
+instead of cloning, run `chmod +x` on the extension program after copying.
 
 Restart niminal, or run `/reload` if it is already open. The extension's slash
 commands and tools are available immediately.
@@ -66,7 +69,6 @@ Tools go in a tools folder instead:
 
 ```bash
 cp -r niminal-extensions/tools/tavily-search ~/.niminal/tools/
-chmod +x ~/.niminal/tools/tavily-search/web-search.py
 ```
 
 Restart niminal or run `/reload`. The model can now call the tool by name.

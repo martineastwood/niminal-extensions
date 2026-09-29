@@ -13,7 +13,6 @@ Copy this directory into a niminal extension root:
 
 ```bash
 cp -r session_cleanup ~/.niminal/extensions/
-chmod +x ~/.niminal/extensions/session_cleanup/extension.py
 ```
 
 Restart niminal or run `/reload`. There is nothing else to configure: the

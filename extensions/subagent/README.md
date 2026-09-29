@@ -20,7 +20,6 @@ Copy this directory into an extension root:
 
 ```bash
 cp -r subagent ~/.niminal/extensions/
-chmod +x ~/.niminal/extensions/subagent/extension.mjs
 ```
 
 Restart niminal or run `/reload`.

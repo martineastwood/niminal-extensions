@@ -1,0 +1,5 @@
+{
+  "name": "btw",
+  "command": ["./extension.mjs"],
+  "response_timeout_seconds": 300
+}

@@ -14,7 +14,6 @@ Copy this directory into a niminal extension root:
 
 ```bash
 cp -r pirate ~/.niminal/extensions/
-chmod +x ~/.niminal/extensions/pirate/extension.py
 ```
 
 Restart niminal or run `/reload`.

@@ -27,35 +27,41 @@ def send(message):
     sys.stdout.flush()
 
 
-def content_text(parts):
+def content_text(content):
+    if isinstance(content, str):
+        return content
+    if not isinstance(content, list):
+        return ""
     lines = []
-    for part in parts:
+    for part in content:
+        if not isinstance(part, dict):
+            continue
         kind = part.get("type")
         if kind == "text":
             lines.append(part.get("text", ""))
-        elif kind == "tool_use":
-            lines.append("[tool call: {} {}]".format(
-                part.get("name", "unknown"),
-                json.dumps(part.get("input", {}), ensure_ascii=False)))
-        elif kind == "tool_result":
-            lines.append("[tool result{}]\n{}".format(
-                " (error)" if part.get("is_error") else "",
-                part.get("content", "")))
+        elif kind == "source":
+            lines.append("[source: {}]".format(
+                part.get("title") or part.get("url", "")))
         elif kind in ("image", "file"):
             lines.append("[{}]".format(kind))
-        elif kind == "source":
-            lines.append("[source: {} {}]".format(
-                part.get("title", ""), part.get("url", "")).rstrip())
     return "\n".join(line for line in lines if line)
 
 
 def serialize(messages):
     sections = []
     for message in messages:
-        body = content_text(message.get("content", []))
+        if message.get("role") == "system":
+            continue
+        body = content_text(message.get("content"))
+        calls = message.get("tool_calls")
+        if isinstance(calls, list) and calls:
+            names = [call.get("function", {}).get("name", "tool") for call in calls
+                     if isinstance(call, dict)]
+            body = "\n".join(line for line in
+                             [body, "[calls: {}]".format(", ".join(names))] if line)
         if body:
             sections.append("{}:\n{}".format(
-                message.get("role", message.get("type", "message")).upper(), body))
+                str(message.get("role", message.get("type", "message"))).upper(), body))
     return "\n\n".join(sections)
 
 
@@ -98,14 +104,16 @@ def handoff(message):
         return
 
     send({"type": "update", "status": {
-        "key": "handoff", "text": "generating handoff"}})
+        "key": "handoff", "segments": [
+            {"text": " handoff ", "style": "emphasis"},
+            {"text": "generating", "style": "accent"}]}})
     generated = host_request(
         "model.complete",
         system_prompt=SYSTEM_PROMPT,
         prompt="## Conversation History\n\n{}\n\n## User's Goal for New Thread\n\n{}".format(
             conversation, goal),
         max_tokens=4096)
-    send({"type": "update", "status": {"key": "handoff", "text": ""}})
+    send({"type": "update", "status": {"key": "handoff", "segments": []}})
     if not generated or generated.get("cancelled") or generated.get("error"):
         command_response(command_id, message="Handoff generation cancelled" if not generated
                          or generated.get("cancelled") else
