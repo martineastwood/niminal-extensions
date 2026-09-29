@@ -13,8 +13,8 @@ ask next.
 
 ## Requirements
 
-- A niminal build with the `model.complete` host request, the same one
-  `/handoff` uses
+- A niminal build with the `model.complete` host request and `markdown` panel
+  widgets, the same one `/handoff` uses for completion
 - Node.js on your `PATH` (standard library only)
 
 ## Install
@@ -36,9 +36,10 @@ Ask a side question:
 ```
 
 The panel shows your question and `Thinking…` while the answer runs. When it is
-ready, the answer appears there wrapped at 80 columns so long lines stay
-readable. The footer also shows `btw thinking` during the request. Your `/btw`
-question and answer are not added to the conversation or sent on later turns.
+ready, the answer appears in the panel, rendered like an assistant reply with
+its headings, lists, and code blocks. The footer also shows `btw thinking`
+during the request. Your `/btw` question and answer are not added to the
+conversation or sent on later turns.
 
 Ask again to continue the side thread. Follow-up questions see the earlier side
 answers as well as the main conversation:
@@ -47,18 +48,20 @@ answers as well as the main conversation:
 /btw and what happens if it never succeeds?
 ```
 
-## Panel actions
+## Reading the answer
 
-Focus the empty composer and press Tab, then move with the up and down keys and
-press Enter:
+The panel body scrolls, so a long answer stays readable without leaving niminal.
+Focus the empty composer and press Tab, then:
 
-| Action | What it does |
+| Key | Effect |
 | --- | --- |
-| Open full answer | Opens the latest answer in your `$VISUAL` or `$EDITOR` |
-| Close | Removes the panel |
+| Up, Down | Scroll one row |
+| PageUp, PageDown | Scroll one page |
+| Tab | Move on to the panel's actions |
+| Escape | Leave the panel where it is |
 
-Long answers are trimmed in the panel. Open the full answer when you want the
-part that did not fit.
+Press Tab again and press Enter on **Close** to remove the panel. You can keep
+typing and working in the composer while the panel is open.
 
 ## What the side question sees
 
@@ -82,9 +85,9 @@ costs the same as any other request of that size.
 
 - `/btw` uses the conversation available when you start the question. It cannot
   see later messages or output from the still-running turn.
-- The panel shows up to 18 lines, counting the question and the answer.
+- The panel body shows 12 rows at a time and scrolls.
 - Closing the panel hides the answer, and there is no way to bring it back other
-  than asking again or using Open full answer first.
+  than asking again.
 - The side thread lives in the extension process. `/reload` or a restart forgets
   the earlier side questions.
 - Answers are not saved to the session, so `/resume` does not bring them back.

@@ -10,8 +10,7 @@ import { randomUUID } from 'node:crypto'
 import readline from 'node:readline'
 
 const WIDGET_KEY = 'btw'
-const WIDTH = 80
-const MAX_PANEL_LINES = 18
+const PANEL_HEIGHT = 12
 const MAX_MESSAGE_CHARS = 1500
 const MAX_CONTEXT_CHARS = 24000
 const KEEP_MESSAGES = 12
@@ -29,7 +28,6 @@ const SYSTEM_PROMPT =
 
 const exchanges = []
 const pending = new Map()
-let lastAnswer = ''
 let active = false
 
 const send = (message) => process.stdout.write(JSON.stringify(message) + '\n')
@@ -91,58 +89,18 @@ function conversation(messages) {
   return blocks.join('\n\n')
 }
 
-// The panel renders one line per text item and does not rewrap, so long lines
-// are wrapped here to keep the full width readable.
-function wrapLine(line, width) {
-  const indent = ' '.repeat(line.length - line.trimStart().length)
-  const limit = Math.max(1, width - indent.length)
-  const out = []
-  let current = ''
-  for (let word of line.trim().split(/\s+/)) {
-    if (current && current.length + 1 + word.length <= limit) {
-      current += ` ${word}`
-      continue
-    }
-    if (current) {
-      out.push(indent + current)
-      current = ''
-    }
-    while (word.length > limit) {
-      out.push(indent + word.slice(0, limit))
-      word = word.slice(limit)
-    }
-    current = word
-  }
-  if (current) out.push(indent + current)
-  return out
-}
-
-function wrap(text, width = WIDTH) {
-  return text
-    .split('\n')
-    .flatMap((line) => (line.trim() ? wrapLine(line, width) : ['']))
-}
-
-function panel(question, answer, thinking = false) {
-  const content = wrap(`Q: ${question}`)
-    .map((text) => ({ type: 'text', text, style: 'emphasis' }))
-  content.push({ type: 'text', text: '' })
-  for (const line of wrap(answer)) content.push({ type: 'text', text: line })
-  if (content.length > MAX_PANEL_LINES) {
-    const hidden = content.length - MAX_PANEL_LINES
-    content.length = MAX_PANEL_LINES
-    content.push({
-      type: 'text',
-      text: `... ${hidden} more lines. Tab, then enter, to open the full answer.`
-    })
-  }
+// The panel body is markdown, rendered and scrolled by niminal, so the answer
+// keeps its headings, lists, and code blocks however long it gets.
+function panel(question, answer, pending = false) {
   return {
     key: WIDGET_KEY,
     title: 'btw',
-    content,
-    actions: thinking
-      ? []
-      : [{ id: 'open', label: 'Open full answer' }, { id: 'close', label: 'Close' }]
+    content: [{
+      type: 'markdown',
+      text: `**Q:** ${question}\n\n${answer}`,
+      height: PANEL_HEIGHT
+    }],
+    actions: pending ? [] : [{ id: 'close', label: 'Close' }]
   }
 }
 
@@ -160,6 +118,17 @@ function thinking(active) {
 
 function deny(id, message) {
   send({ type: 'response', id, message })
+}
+
+// niminal repaints only after a command answers, so the command returns as soon
+// as the panel is open and the answer follows as an update. Answering with the
+// model's reply instead would leave /btw looking dead until it arrived.
+function openPanel(id, question) {
+  send({ type: 'response', id, widget: panel(question, 'Thinking…', true) })
+}
+
+function showAnswer(question, text) {
+  send({ type: 'update', widget: panel(question, text) })
 }
 
 async function ask(message) {
@@ -187,7 +156,7 @@ async function ask(message) {
   sections.push(`## Side question\n\n${question}`)
 
   thinking(true)
-  send({ type: 'update', widget: panel(question, 'Thinking…', true) })
+  openPanel(message.id, question)
   try {
     const result = await hostRequest('model.complete', {
       system_prompt: SYSTEM_PROMPT,
@@ -196,35 +165,28 @@ async function ask(message) {
       read_only_tools: true
     })
     if (!result || result.cancelled) {
-      finishWithMessage(message.id, question, 'btw cancelled')
+      showAnswer(question, 'btw cancelled')
       return
     }
     if (result.error) {
-      finishWithMessage(message.id, question, `btw failed: ${result.error}`)
+      showAnswer(question, `btw failed: ${result.error}`)
       return
     }
     const answer = String(result.result?.text ?? '').trim()
     if (!answer) {
-      finishWithMessage(message.id, question, 'btw got no answer back')
+      showAnswer(question, 'btw got no answer back')
       return
     }
-    lastAnswer = answer
     exchanges.push([question, answer])
-    send({ type: 'response', id: message.id, widget: panel(question, answer) })
+    showAnswer(question, answer)
   } finally {
     active = false
     thinking(false)
   }
 }
 
-function finishWithMessage(id, question, message) {
-  send({ type: 'response', id, widget: panel(question, message) })
-}
-
 function act(message) {
-  if (message.action === 'open' && lastAnswer) {
-    hostRequest('ui.editor', { title: 'btw', text: lastAnswer })
-  } else if (message.action === 'close') {
+  if (message.action === 'close') {
     send({
       type: 'update',
       widget: { key: WIDGET_KEY, title: '', content: [], actions: [] }
@@ -254,8 +216,7 @@ input.on('line', (line) => {
     }
   } else if (message.type === 'command' && message.name === 'btw') {
     ask(message).catch((err) => {
-      const question = String(message.arguments ?? '').trim()
-      finishWithMessage(message.id, question, `btw failed: ${err.message}`)
+      showAnswer(String(message.arguments ?? '').trim(), `btw failed: ${err.message}`)
     })
   } else if (message.type === 'ui_action' && message.widget === WIDGET_KEY) {
     act(message)
