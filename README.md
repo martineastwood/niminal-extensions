@@ -34,6 +34,7 @@ them. They show up as typed tools next to the built-in ones.
 | Tool | What it does | Docs |
 | --- | --- | --- |
 | [tavily-search](./tools/tavily-search/) | Add a `web_search` tool backed by the Tavily search API | [README](./tools/tavily-search/README.md) |
+| [tavily-extract](./tools/tavily-extract/) | Add a `fetch_content` tool that reads pages through the Tavily Extract API | [README](./tools/tavily-extract/README.md) |
 
 ## Before you install
 

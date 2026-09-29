@@ -1,0 +1,28 @@
+{
+  "name": "fetch_content",
+  "description": "Fetch one or more pages and return their readable page text through Tavily. Use it to read a source from a search result in full, or to read a URL the user mentions.",
+  "command": ["./extract.py"],
+  "input_schema": {
+    "type": "object",
+    "properties": {
+      "urls": {
+        "type": "array",
+        "items": {"type": "string"},
+        "description": "Page URLs to fetch, up to 20 in one call."
+      },
+      "extract_depth": {
+        "type": "string",
+        "enum": ["basic", "advanced"],
+        "description": "Use advanced for JavaScript-heavy pages. Defaults to basic."
+      },
+      "format": {
+        "type": "string",
+        "enum": ["markdown", "text"],
+        "description": "Output format. Defaults to markdown."
+      }
+    },
+    "required": ["urls"]
+  },
+  "timeout_seconds": 120,
+  "capabilities": ["network"]
+}

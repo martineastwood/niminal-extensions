@@ -1,6 +1,6 @@
 {
   "name": "web_search",
-  "description": "Search the web with Tavily and return ranked results: titles, URLs, and content excerpts. Use it for current information beyond the workspace.",
+  "description": "Search the web with Tavily and return ranked results: titles, URLs, and content excerpts. Narrow with domains or recency, or ask for full page text. Use it for current information beyond the workspace.",
   "command": ["./web-search.py"],
   "input_schema": {
     "type": "object",
@@ -14,12 +14,42 @@
       },
       "topic": {
         "type": "string",
-        "enum": ["general", "news"],
+        "enum": ["general", "news", "finance"],
         "description": "Search category. Defaults to general."
       },
       "include_answer": {
         "type": "boolean",
         "description": "Include a short synthesized answer. Defaults to true."
+      },
+      "search_depth": {
+        "type": "string",
+        "enum": ["basic", "advanced", "fast", "ultra-fast"],
+        "description": "Retrieval depth. Use advanced for harder questions. Defaults to basic."
+      },
+      "time_range": {
+        "type": "string",
+        "enum": ["day", "week", "month", "year"],
+        "description": "Limit results to a recent period, such as week."
+      },
+      "days": {
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 365,
+        "description": "Limit news results to the last N days."
+      },
+      "include_domains": {
+        "type": "array",
+        "items": {"type": "string"},
+        "description": "Only return results from these domains, such as docs.example.com."
+      },
+      "exclude_domains": {
+        "type": "array",
+        "items": {"type": "string"},
+        "description": "Drop results from these domains."
+      },
+      "include_raw_content": {
+        "type": "boolean",
+        "description": "Return the full page text of each result instead of only an excerpt. Defaults to false."
       }
     },
     "required": ["query"]

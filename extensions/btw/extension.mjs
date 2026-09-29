@@ -29,6 +29,7 @@ const SYSTEM_PROMPT =
 const exchanges = []
 const pending = new Map()
 let lastAnswer = ''
+let active = false
 
 const send = (message) => process.stdout.write(JSON.stringify(message) + '\n')
 
@@ -121,7 +122,7 @@ function wrap(text, width = WIDTH) {
     .flatMap((line) => (line.trim() ? wrapLine(line, width) : ['']))
 }
 
-function panel(question, answer) {
+function panel(question, answer, thinking = false) {
   const content = wrap(`Q: ${question}`)
     .map((text) => ({ type: 'text', text, style: 'emphasis' }))
   content.push({ type: 'text', text: '' })
@@ -138,10 +139,9 @@ function panel(question, answer) {
     key: WIDGET_KEY,
     title: 'btw',
     content,
-    actions: [
-      { id: 'open', label: 'Open full answer' },
-      { id: 'close', label: 'Close' }
-    ]
+    actions: thinking
+      ? []
+      : [{ id: 'open', label: 'Open full answer' }, { id: 'close', label: 'Close' }]
   }
 }
 
@@ -167,6 +167,11 @@ async function ask(message) {
     deny(message.id, 'Usage: /btw <side question>')
     return
   }
+  if (active) {
+    deny(message.id, 'btw is still answering the previous question')
+    return
+  }
+  active = true
   const context = message.context ?? {}
   const sections = []
   const history = conversation(Array.isArray(context.messages) ? context.messages : [])
@@ -181,28 +186,37 @@ async function ask(message) {
   sections.push(`## Side question\n\n${question}`)
 
   thinking(true)
-  const result = await hostRequest('model.complete', {
-    system_prompt: SYSTEM_PROMPT,
-    prompt: sections.join('\n\n'),
-    max_tokens: 900
-  })
-  thinking(false)
-  if (!result || result.cancelled) {
-    deny(message.id, 'btw cancelled')
-    return
+  send({ type: 'update', widget: panel(question, 'Thinking…', true) })
+  try {
+    const result = await hostRequest('model.complete', {
+      system_prompt: SYSTEM_PROMPT,
+      prompt: sections.join('\n\n'),
+      max_tokens: 900
+    })
+    if (!result || result.cancelled) {
+      finishWithMessage(message.id, question, 'btw cancelled')
+      return
+    }
+    if (result.error) {
+      finishWithMessage(message.id, question, `btw failed: ${result.error}`)
+      return
+    }
+    const answer = String(result.result?.text ?? '').trim()
+    if (!answer) {
+      finishWithMessage(message.id, question, 'btw got no answer back')
+      return
+    }
+    lastAnswer = answer
+    exchanges.push([question, answer])
+    send({ type: 'response', id: message.id, widget: panel(question, answer) })
+  } finally {
+    active = false
+    thinking(false)
   }
-  if (result.error) {
-    deny(message.id, `btw failed: ${result.error}`)
-    return
-  }
-  const answer = String(result.result?.text ?? '').trim()
-  if (!answer) {
-    deny(message.id, 'btw got no answer back')
-    return
-  }
-  lastAnswer = answer
-  exchanges.push([question, answer])
-  send({ type: 'response', id: message.id, widget: panel(question, answer) })
+}
+
+function finishWithMessage(id, question, message) {
+  send({ type: 'response', id, widget: panel(question, message) })
 }
 
 function act(message) {
@@ -220,7 +234,8 @@ send({
   type: 'register',
   commands: [{
     name: 'btw',
-    description: 'Ask a side question without touching the main conversation'
+    description: 'Ask a side question without touching the main conversation',
+    while_busy: true
   }]
 })
 
@@ -236,7 +251,10 @@ input.on('line', (line) => {
       resolve(message)
     }
   } else if (message.type === 'command' && message.name === 'btw') {
-    ask(message).catch((err) => deny(message.id, `btw failed: ${err.message}`))
+    ask(message).catch((err) => {
+      const question = String(message.arguments ?? '').trim()
+      finishWithMessage(message.id, question, `btw failed: ${err.message}`)
+    })
   } else if (message.type === 'ui_action' && message.widget === WIDGET_KEY) {
     act(message)
   } else if (message.type === 'cancel') {

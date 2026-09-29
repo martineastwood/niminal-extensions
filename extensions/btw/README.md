@@ -2,9 +2,9 @@
 
 Ask a side question without adding it to the conversation. `/btw` sends your
 question to the active model with the conversation so far as background, and
-shows the answer in a `btw` panel above the composer. The question, the answer,
-and everything the model read to answer it stay out of the main thread, so your
-context keeps only the work you asked for.
+shows the answer in a `btw` panel above the composer. You can ask while the main
+agent is working and keep using the composer while the side answer runs. The
+question, answer, and background stay out of the main thread.
 
 Use it when something in the last turn makes you curious, but you do not want it
 turned into the agent's next task: a term you have not seen, a decision you want
@@ -35,9 +35,10 @@ Ask a side question:
 /btw why does the retry helper wait before the second attempt?
 ```
 
-The answer appears in a `btw` panel above the composer, wrapped at 80 columns so
-long lines stay readable. Your `/btw` question and the answer are not added to
-the conversation and are not sent again on later turns.
+The panel shows your question and `Thinking…` while the answer runs. When it is
+ready, the answer appears there wrapped at 80 columns so long lines stay
+readable. The footer also shows `btw thinking` during the request. Your `/btw`
+question and answer are not added to the conversation or sent on later turns.
 
 Ask again to continue the side thread. Follow-up questions see the earlier side
 answers as well as the main conversation:
@@ -74,8 +75,8 @@ costs the same as any other request of that size.
 
 ## Limitations
 
-- Run `/btw` between turns. While a turn is running, niminal answers extension
-  commands with "wait for the turn to finish, or esc to interrupt".
+- `/btw` uses the conversation available when you start the question. It cannot
+  see later messages or output from the still-running turn.
 - The panel shows up to 18 lines, counting the question and the answer.
 - Closing the panel hides the answer, and there is no way to bring it back other
   than asking again or using Open full answer first.
