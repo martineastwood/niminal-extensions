@@ -79,18 +79,14 @@ def task_text(task):
 
 
 def list_text(state, status=None, include_deleted=False):
-    tasks = [task for task in state["tasks"]
-             if (include_deleted or task["status"] != "deleted") and
-             (status is None or task["status"] == status)]
-    if not tasks:
-        return "No tasks."
+    statuses = [status] if status else ["in_progress", "pending"] + (["deleted"] if include_deleted else [])
     groups = []
-    for current in ("in_progress", "pending", "completed", "deleted"):
-        rows = [task for task in tasks if task["status"] == current]
+    for current in statuses:
+        rows = [task for task in state["tasks"] if task["status"] == current]
         if rows:
             groups.append(current.replace("_", " ").title() + ":\n" +
                           "\n".join("  " + task_text(task) for task in rows))
-    return "\n\n".join(groups)
+    return "\n\n".join(groups) if groups else "No tasks."
 
 
 def make_widget(state):
@@ -112,7 +108,6 @@ def make_widget(state):
     content = [{"type": "list", "items": items}]
     if len(ordered) > len(visible):
         content.append({"type": "text", "text": f"+{len(ordered) - len(visible)} more tasks"})
-    content.append({"type": "progress", "label": "Complete", "value": complete, "max": len(tasks)})
     actions = [
         {"id": f"complete:{task['id']}", "label": f"Complete #{task['id']}"}
         for task in ordered if task["status"] != "completed"

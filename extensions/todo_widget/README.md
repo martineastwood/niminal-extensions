@@ -46,9 +46,9 @@ Review the list yourself at any time:
 
 The widget sits above the composer and shows:
 
-- each task as `#id subject`, with the in-progress task's `activeForm` label
-- a `Complete` progress bar, and the count in the title, for example
-  `Todos · 2/5 complete`
+- each task as `#id subject`, with the in-progress task's `activeForm` label.
+  Completed tasks stay in the list with a `✓` marker and dimmed text
+- the count in the title, for example `Todos · 2/5 complete`
 - **Complete #id** for each unfinished task, and **Clear todos** once every
   task is complete
 
@@ -64,7 +64,7 @@ when every task is completed or deleted.
 | --- | --- | --- |
 | `create` | `subject` | Adds a pending task and returns its id |
 | `update` | `id`, plus `subject`, `description`, `activeForm`, or `status` | Changes one task |
-| `list` | none | Lists tasks grouped by status |
+| `list` | none | Lists unfinished tasks grouped by status |
 | `get` | `id` | Shows one task |
 | `delete` | `id` | Marks a task deleted |
 | `clear` | none | Removes every task and resets ids |
@@ -72,10 +72,13 @@ when every task is completed or deleted.
 Other arguments: `description` and `activeForm` add detail and a
 present-continuous label such as "Running tests", and `status` is `pending`,
 `in_progress`, or `completed`. Deleted tasks stay in the saved file; `list`
-hides them unless you pass `includeDeleted`.
+hides them unless you pass `includeDeleted`. Completed tasks also stay in the
+saved file, and `list` shows them only when you ask for that status, for
+example `{"action": "list", "status": "completed"}`.
 
-After any action except `list`, the tool result ends with the current list,
-deleted tasks included, so the agent always sees the full picture.
+After any action except `list`, the tool result ends with the current list of
+unfinished and deleted tasks, so the agent always sees the open work without
+repeating finished tasks.
 
 Because the tool writes saved tasks, niminal asks for permission before the
 agent uses it.
