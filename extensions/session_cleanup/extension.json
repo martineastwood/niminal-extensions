@@ -1,0 +1,5 @@
+{
+  "name": "session_cleanup",
+  "command": ["./extension.py"],
+  "response_timeout_seconds": 30
+}

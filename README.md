@@ -23,6 +23,7 @@ lifecycle events like the start and end of a turn.
 | [panel_demo](./extensions/panel_demo/) | Add `/panel_demo` to show a widget panel with action buttons | [README](./extensions/panel_demo/README.md) |
 | [pirate](./extensions/pirate/) | Add `/pirate` to make the agent answer like a pirate | [README](./extensions/pirate/README.md) |
 | [powerline_footer](./extensions/powerline_footer/) | Add `/footer_demo` to show the provider and model in the footer | [README](./extensions/powerline_footer/README.md) |
+| [session_cleanup](./extensions/session_cleanup/) | Delete session files older than 30 days when you quit | [README](./extensions/session_cleanup/README.md) |
 | [subagent](./extensions/subagent/) | Delegate work to isolated read-only subagents, from the model or `/subagent` | [README](./extensions/subagent/README.md) |
 | [todo](./extensions/todo/) | Give the agent a `todo` tool and a task list widget above the composer | [README](./extensions/todo/README.md) |
 
