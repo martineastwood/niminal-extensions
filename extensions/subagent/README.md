@@ -41,24 +41,24 @@ The tool takes:
 | --- | --- | --- |
 | `task` | yes | Complete, self-contained instructions for the subagent |
 | `label` | no | Short name shown in progress output, e.g. `parser-investigation` |
-| `type` | no | An agent type, such as `explore` or `general`. Defaults to `general` |
+| `agent` | no | Agent to run, such as `explore` or `general`. Defaults to `general` |
 | `timeout_seconds` | no | Kill the subagent after this many seconds. Defaults to 1800 |
 
-## Subagent types
+## Agents
 
-| Type | Tools | Use it for |
+| Agent | Tools | Use it for |
 | --- | --- | --- |
-| `explore` | `read`, `grep`, `glob`, `ls` | Finding where code lives and how it works. The cheapest, fastest type |
+| `explore` | `read`, `grep`, `glob`, `ls` | Finding where code lives and how it works. The cheapest, fastest agent |
 | `general` | `explore` tools plus `skill` | Multi-step research that should consult your skills or instructions |
 
-Both types are read-only, so a subagent can report on your code but never change
-it. No type can start further subagents.
+Both agents are read-only, so a subagent can report on your code but never change
+it. No agent can start further subagents.
 
 ### Add your own agent
 
-Drop a Markdown file in `~/.niminal/subagents/` and it joins the type list. The
-prompt is the file body, and the frontmatter sets the description, tools, and
-model:
+Drop a Markdown file in `~/.niminal/subagents/` or `~/.agents/subagents/` and it
+joins the agent list. The prompt is the file body, and the frontmatter sets the
+description, tools, and model:
 
 ```markdown
 ---
@@ -75,11 +75,12 @@ concrete bugs, missing tests, and anything you could not verify.
 | `description` | no | Shown in the tool schema so the model knows when to pick this agent |
 | `tools` | no | Comma-separated read-only tools. Defaults to all of them |
 | `model` | no | Model for this agent. Overrides `default_model` |
-| `name` | no | Type name. Defaults to the file name |
+| `name` | no | Agent name. Defaults to the file name |
 
-The file name is the type name, so `reviewer.md` gives you `type: "reviewer"`.
-Agents in the project folder `<workspace>/.niminal/subagents/` override global
-ones, and a project agent can replace a built-in type like `explore`.
+The file name is the agent name, so `reviewer.md` gives you
+`agent: "reviewer"`. A later file replaces an earlier one with the same name:
+project agents beat global ones, `.niminal` beats `.agents` in the same scope,
+and either can replace a built-in like `explore`.
 
 Agent files are read only. A `tools` value that names anything outside `read`,
 `grep`, `glob`, `ls`, and `skill` is dropped, and the extension warns on stderr.
@@ -93,17 +94,17 @@ If every tool is dropped, the agent falls back to all read-only tools.
 /subagent reviewer check the change I just made
 ```
 
-The report is printed in your session. The first word is treated as a type only
-when it names an agent, so `/subagent find the parser` runs the default agent on
-the whole line.
+The report is printed in your session. A leading word names the agent only when
+it matches one, so `/subagent find the parser` runs the default agent on the
+whole line.
 
 ## Choose the model
 
 A subagent runs on the model its agent file sets, then on `default_model` from
-`subagents.json` or `SUBAGENT_MODEL`. When neither sets one, it inherits your
-session model.
+`subagents.json` or `SUBAGENT_DEFAULT_MODEL`. When neither sets one, it inherits
+your session model.
 
-Neither built-in type sets a model, so give the agent file one whenever a run
+Neither built-in agent sets a model, so give the agent file one whenever a run
 should use something other than your session model, for example a cheaper model
 for search work:
 
@@ -124,7 +125,7 @@ An id the provider does not know fails the run, and the report starts with
 `subagent failed:` followed by the provider's message.
 
 The model id comes from the agent file or the config, never from the tool call,
-so ask for a type instead: "two explore subagents, one for each package".
+so pick an agent instead: "two explore subagents, one for each package".
 
 ## Run subagents in parallel
 
@@ -182,16 +183,19 @@ for, and what to report.
 
 ## Configuration
 
-Set shared defaults in `~/.niminal/subagents.json`. A
-`<workspace>/.niminal/subagents.json` overrides it per project, and environment
-variables override both.
+Set shared defaults in `~/.niminal/subagents.json`. The extension reads
+`subagents.json` from the same folders as agent files, so it also picks up
+`~/.agents/subagents.json`, `<workspace>/.agents/subagents.json`, and
+`<workspace>/.niminal/subagents.json`. A project file overrides a global file,
+`.niminal` overrides `.agents` in the same scope, and environment variables
+override them all.
 
 | Key | Environment variable | Default | Meaning |
 | --- | --- | --- | --- |
 | `max_concurrent` | `SUBAGENT_MAX_CONCURRENT` | `4` | Subagents allowed to run at once. Further calls wait for a slot |
 | `timeout_seconds` | `SUBAGENT_TIMEOUT_SECONDS` | `1800` | Seconds before a stuck subagent is killed. Per-call `timeout_seconds` overrides it |
-| `default_agent` | | `general` | Type used when the model omits `type` |
-| `default_model` | `SUBAGENT_MODEL` | unset | Model for subagents whose agent file sets none |
+| `default_agent` | | `general` | Agent used when the model omits `agent` |
+| `default_model` | `SUBAGENT_DEFAULT_MODEL` | unset | Model for subagents whose agent file sets none |
 
 ```json
 {

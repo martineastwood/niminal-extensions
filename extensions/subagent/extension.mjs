@@ -2,9 +2,9 @@
 // subagent: expose niminal subagents as a model tool and a slash command.
 //
 // Each run starts "niminal --mode json --no-session" in a fresh read-only
-// session and returns the subagent's final report with its token usage. Agent
-// types are the built-in explore and general, plus any *.md files under
-// ~/.niminal/subagents/ or <workspace>/.niminal/subagents/. Runs show in a
+// session and returns the subagent's final report with its token usage. Agents
+// are the built-in explore and general, plus any *.md files under a subagents/
+// folder in the global or project .niminal and .agents roots. Runs show in a
 // Subagents panel above the composer, and calls beyond the concurrency limit
 // wait for a slot instead of failing.
 import { spawn } from 'node:child_process'
@@ -116,19 +116,21 @@ function agentFromFile(file) {
   }
 }
 
-// Global files first, then project files, so a project can override an agent.
-// niminal runs extensions in the workspace, so process.cwd() is the workspace.
-const agentDirs = [
-  join(homedir(), '.niminal', 'subagents'),
-  join(homedir(), '.agents', 'subagents'),
-  join(workspace, '.niminal', 'subagents'),
-  join(workspace, '.agents', 'subagents')
+// Global files first, then project files, and the portable .agents layout
+// before .niminal, so the last file read wins. niminal orders its own resources
+// the same way. It runs extensions in the workspace, so process.cwd() is the
+// workspace.
+const RESOURCE_ROOTS = [
+  join(homedir(), '.agents'),
+  join(homedir(), '.niminal'),
+  join(workspace, '.agents'),
+  join(workspace, '.niminal')
 ]
+const agentDirs = RESOURCE_ROOTS.map((root) => join(root, 'subagents'))
 
-const config = {
-  ...DEFAULT_CONFIG,
-  ...(readJson(join(homedir(), '.niminal', 'subagents.json')) || {}),
-  ...(readJson(join(workspace, '.niminal', 'subagents.json')) || {})
+const config = { ...DEFAULT_CONFIG }
+for (const root of RESOURCE_ROOTS) {
+  Object.assign(config, readJson(join(root, 'subagents.json')) || {})
 }
 
 const AGENTS = Object.fromEntries(
@@ -159,7 +161,7 @@ const maxConcurrent = positiveNumber(process.env.SUBAGENT_MAX_CONCURRENT,
   positiveNumber(config.max_concurrent, 4))
 const defaultTimeoutSeconds = positiveNumber(process.env.SUBAGENT_TIMEOUT_SECONDS,
   positiveNumber(config.timeout_seconds, 1800))
-const defaultModel = process.env.SUBAGENT_MODEL || config.default_model || ''
+const defaultModel = process.env.SUBAGENT_DEFAULT_MODEL || config.default_model || ''
 
 send({
   type: 'register',
@@ -187,7 +189,7 @@ send({
           type: 'string',
           description: 'Short name shown in the Subagents panel, e.g. "parser-investigation".'
         },
-        type: {
+        agent: {
           type: 'string',
           enum: Object.keys(AGENTS),
           description: Object.entries(AGENTS)
@@ -513,7 +515,7 @@ function makeLabel(raw, task) {
 }
 
 function usageText() {
-  return 'Usage: /subagent [type] <task>. Types: ' +
+  return 'Usage: /subagent [agent] <task>. Agents: ' +
     Object.entries(AGENTS).map(([name, agent]) => `${name}: ${agent.description}`).join('; ') +
     `. Defaults to ${DEFAULT_AGENT}.`
 }
@@ -529,10 +531,10 @@ async function handleTool(message) {
     sendError(message.id, 'subagent requires a non-empty "task".')
     return
   }
-  const name = String(input.type ?? '').trim().toLowerCase() || DEFAULT_AGENT
+  const name = String(input.agent ?? '').trim().toLowerCase() || DEFAULT_AGENT
   const agent = AGENTS[name]
   if (!agent) {
-    sendError(message.id, `subagent "type" must be one of: ${Object.keys(AGENTS).join(', ')}.`)
+    sendError(message.id, `subagent "agent" must be one of: ${Object.keys(AGENTS).join(', ')}.`)
     return
   }
   const timeoutSeconds = input.timeout_seconds === undefined
@@ -558,8 +560,8 @@ async function handleTool(message) {
   })
 }
 
-// /subagent [type] <task> runs one subagent and prints its report. A leading
-// word only counts as a type when it names an agent, so a normal task is safe.
+// /subagent [agent] <task> runs one subagent and prints its report. A leading
+// word only counts as an agent when it names one, so a normal task is safe.
 async function handleCommand(message) {
   const args = String(message.arguments ?? '').trim()
   const first = args.split(/\s+/)[0].toLowerCase()
