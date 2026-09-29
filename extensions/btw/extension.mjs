@@ -22,9 +22,10 @@ const SYSTEM_PROMPT =
   'on the main task and the user is asking you off to the side.\n\n' +
   'Use the conversation so far as background. Answer directly and briefly: a few ' +
   'sentences, or a short list when that is clearer.\n\n' +
-  'Do not propose edits, do not run commands, and do not repeat the conversation back. ' +
-  'If the conversation does not answer the question, say what would have to be checked ' +
-  'instead of guessing.'
+  'You may inspect workspace files with read-only tools to answer questions about the code. ' +
+  'Do not propose edits, edit files, or run shell commands. Do not repeat the ' +
+  'conversation back. If the conversation and workspace do not answer the question, say ' +
+  'what would have to be checked instead of guessing.'
 
 const exchanges = []
 const pending = new Map()
@@ -191,7 +192,8 @@ async function ask(message) {
     const result = await hostRequest('model.complete', {
       system_prompt: SYSTEM_PROMPT,
       prompt: sections.join('\n\n'),
-      max_tokens: 900
+      max_tokens: 900,
+      read_only_tools: true
     })
     if (!result || result.cancelled) {
       finishWithMessage(message.id, question, 'btw cancelled')

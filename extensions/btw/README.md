@@ -66,9 +66,14 @@ The model answers from the conversation, trimmed to the most recent 12 messages,
 each capped at 1500 characters, with the whole background capped at 24000
 characters. Earlier side questions in this run are included, up to the last 6.
 
-The side question has no tools. It cannot read files, search the workspace, or
-change anything, so it answers from what is already in the conversation and says
-what would have to be checked when the answer is not there.
+The side question can read and search the workspace with the `read`, `grep`,
+`glob`, and `ls` tools. This helps when the code needed for an answer has not
+appeared in the conversation. It cannot edit files or run shell commands. If it
+cannot find the answer in the conversation or workspace, it says what would
+need to be checked instead of guessing.
+
+Each answer can use up to eight read-only tool calls. Large text results are
+trimmed before they are sent to the model.
 
 Each side question is a normal model request on your active provider, so it
 costs the same as any other request of that size.
