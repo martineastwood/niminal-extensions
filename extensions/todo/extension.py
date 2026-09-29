@@ -14,15 +14,18 @@ TOOL = {
     "name": "todo",
     "description": (
         "Track multi-step work in a persistent todo list. Use this for tasks with several steps "
-        "or when the user asks to track work. Create tasks before starting, mark the current task "
-        "in_progress, and mark each task completed only after its work and checks are done. "
-        "Use list or get before changing existing tasks. State is saved for this workspace and session."
+        "or when the user asks to track work. Create the tasks up front with subjects, mark the "
+        "current task in_progress when you start it, and mark each task completed only after its "
+        "work and checks are done. Every result lists the open tasks. State is saved for this "
+        "workspace and session."
     ),
     "input_schema": {
         "type": "object",
         "properties": {
             "action": {"type": "string", "enum": ["create", "update", "list", "get", "delete", "clear"]},
             "subject": {"type": "string", "description": "Short, imperative task name."},
+            "subjects": {"type": "array", "items": {"type": "string"},
+                         "description": "Create several tasks in one call, in order. Use instead of subject for a new plan."},
             "description": {"type": "string", "description": "Optional task detail."},
             "activeForm": {"type": "string", "description": "Present-continuous label shown while in progress."},
             "id": {"type": "integer", "minimum": 1},
@@ -89,9 +92,22 @@ def list_text(state, status=None, include_deleted=False):
     return "\n\n".join(groups) if groups else "No tasks."
 
 
+def open_tasks(state):
+    return [task for task in state["tasks"] if task["status"] in ("pending", "in_progress")]
+
+
+def summary_text(state):
+    tasks = open_tasks(state)
+    if not tasks:
+        return "No open tasks."
+    return "Open tasks: " + "; ".join(
+        f"#{task['id']} {task['subject']} ({task['status'].replace('_', ' ')})"
+        for task in tasks)
+
+
 def make_widget(state):
     tasks = [task for task in state["tasks"] if task["status"] != "deleted"]
-    if not tasks:
+    if not open_tasks(state):
         return {"key": "tasks", "title": "", "content": [], "actions": []}
     ordered = sorted(tasks, key=lambda task: (
         ("in_progress", "pending", "completed").index(task["status"]), task["id"]))
@@ -100,22 +116,17 @@ def make_widget(state):
     items = []
     for task in visible:
         label = f"#{task['id']} {task['subject']}"
-        if task.get("activeForm") and task["status"] == "in_progress":
-            label += f" ({task['activeForm']})"
+        if task["status"] == "in_progress":
+            label += f" ({task.get('activeForm') or 'In progress'})"
         items.append({"text": label, "state": {
             "pending": "pending", "in_progress": "active", "completed": "done"
         }[task["status"]]})
     content = [{"type": "list", "items": items}]
     if len(ordered) > len(visible):
         content.append({"type": "text", "text": f"+{len(ordered) - len(visible)} more tasks"})
-    actions = [
-        {"id": f"complete:{task['id']}", "label": f"Complete #{task['id']}"}
-        for task in ordered if task["status"] != "completed"
-    ][:8]
-    if complete == len(tasks):
-        actions.append({"id": "clear", "label": "Clear todos"})
-    return {"key": "tasks", "title": f"Todos · {complete}/{len(tasks)} complete",
-            "content": content, "actions": actions}
+    content.append({"type": "progress", "label": f"{complete}/{len(tasks)} complete",
+                    "value": complete, "max": len(tasks)})
+    return {"key": "tasks", "title": "Todos", "content": content, "actions": []}
 
 
 def update_task(state, params):
@@ -142,14 +153,20 @@ def update_task(state, params):
                 task.pop(name, None)
                 continue
         task[name] = value.strip() if name == "subject" else value
-    if task == before:
+    demoted = 0
+    if task["status"] == "in_progress":
+        for other in state["tasks"]:
+            if other is not task and other["status"] == "in_progress":
+                other["status"] = "pending"
+                demoted += 1
+    if task == before and demoted == 0:
         return f"No change: #{task_id} already has those values."
     return f"Updated {task_text(task)}"
 
 
-def apply_action(state, params):
-    action = params.get("action")
-    if action == "create":
+def create_tasks(state, params):
+    subjects = params.get("subjects")
+    if subjects is None:
         subject = params.get("subject")
         if not isinstance(subject, str) or not subject.strip():
             raise ValueError("subject is required for create")
@@ -164,6 +181,21 @@ def apply_action(state, params):
         state["tasks"].append(task)
         state["next_id"] += 1
         return f"Created {task_text(task)}"
+    if (not isinstance(subjects, list) or not subjects or
+            any(not isinstance(item, str) or not item.strip() for item in subjects)):
+        raise ValueError("subjects must be a non-empty list of non-empty strings")
+    created = []
+    for subject in subjects:
+        created.append({"id": state["next_id"], "subject": subject.strip(), "status": "pending"})
+        state["tasks"].append(created[-1])
+        state["next_id"] += 1
+    return "Created " + ", ".join(f"#{task['id']} {task['subject']}" for task in created)
+
+
+def apply_action(state, params):
+    action = params.get("action")
+    if action == "create":
+        return create_tasks(state, params)
     if action == "update":
         return update_task(state, params)
     if action == "list":
@@ -194,7 +226,6 @@ def apply_action(state, params):
     if action == "clear":
         count = len(state["tasks"])
         state["tasks"] = []
-        state["next_id"] = 1
         return f"Cleared {count} tasks."
     raise ValueError("action must be create, update, list, get, delete, or clear")
 
@@ -222,7 +253,7 @@ def response(message_id, message, state, is_error=False):
 
 
 send({"type": "register", "commands": [
-    {"name": "todos", "description": "Show the current task list"}
+    {"name": "todo", "description": "Show the current task list"}
 ], "tools": [TOOL], "events": ["session_start"]})
 
 for line in sys.stdin:
@@ -236,40 +267,29 @@ for line in sys.stdin:
         SESSION_ID = message.get("payload", {}).get("session_id") or SESSION_ID
         state = load_state()
         send({"type": "response", "id": message["id"], "widget": make_widget(state)})
-    elif kind == "command" and message.get("name") == "todos":
+    elif kind == "command" and message.get("name") == "todo":
         state = load_state()
-        summary = list_text(state)
+        summary = list_text(state) if open_tasks(state) else list_text(state, "completed")
         send({"type": "response", "id": message["id"],
               "message": "No todos yet. Ask me to add tasks." if summary == "No tasks." else summary,
               "widget": make_widget(state)})
     elif kind == "tool" and message.get("name") == "todo":
         try:
             params = message.get("arguments", {})
+            before = load_state()
             result, state = run_tool(params)
             if params.get("action") != "list":
-                result += "\n\nCurrent todo list:\n" + list_text(state, include_deleted=True)
+                result += "\n\n" + summary_text(state)
             response(message["id"], result, state)
+            completed = sum(task["status"] == "completed" for task in state["tasks"])
+            was_completed = sum(task["status"] == "completed" for task in before["tasks"])
+            if completed > was_completed and not open_tasks(state):
+                send({"type": "update", "notification": {
+                    "level": "info",
+                    "message": f"All {completed} task{'s' if completed > 1 else ''} complete"}})
         except (ValueError, OSError) as error:
             try:
                 state = load_state()
             except ValueError:
                 state = {"tasks": [], "next_id": 1}
             response(message["id"], f"Error: {error}", state, True)
-    elif kind == "ui_action" and message.get("widget") == "tasks":
-        action = message.get("action", "")
-        if action == "clear":
-            try:
-                state = load_state()
-                if state["tasks"] and all(
-                        task["status"] in ("completed", "deleted") for task in state["tasks"]):
-                    _, state = run_tool({"action": "clear"})
-                    send({"type": "update", "widget": make_widget(state)})
-            except (ValueError, OSError):
-                pass
-        elif action.startswith("complete:"):
-            try:
-                task_id = int(action.split(":", 1)[1])
-                run_tool({"action": "update", "id": task_id, "status": "completed"})
-                send({"type": "update", "widget": make_widget(load_state())})
-            except (ValueError, OSError):
-                pass

@@ -25,7 +25,7 @@ Copy this directory into a niminal tools root and make the program executable:
 
 ```bash
 cp -r tavily-search ~/.niminal/tools/
-chmod +x ~/.niminal/tools/tavily-search/web-search
+chmod +x ~/.niminal/tools/tavily-search/web-search.py
 ```
 
 Export the key where niminal runs:

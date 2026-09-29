@@ -20,11 +20,11 @@ lifecycle events like the start and end of a turn.
 | --- | --- | --- |
 | [handoff](./extensions/handoff/) | Carry context from a long conversation into a clean session | [README](./extensions/handoff/README.md) |
 | [herdr](./extensions/herdr/) | Report niminal's state to a [Herdr](https://herdr.dev) pane | [README](./extensions/herdr/README.md) |
+| [panel_demo](./extensions/panel_demo/) | Add `/panel_demo` to show a widget panel with action buttons | [README](./extensions/panel_demo/README.md) |
 | [pirate](./extensions/pirate/) | Add `/pirate` to make the agent answer like a pirate | [README](./extensions/pirate/README.md) |
 | [powerline_footer](./extensions/powerline_footer/) | Add `/footer_demo` to show the provider and model in the footer | [README](./extensions/powerline_footer/README.md) |
-| [spawn_agent](./extensions/spawn_agent/) | Let the model delegate work to isolated subagents | [README](./extensions/spawn_agent/README.md) |
-| [subagent_panel](./extensions/subagent_panel/) | Show a simulated subagent panel with steer and stop buttons | [README](./extensions/subagent_panel/README.md) |
-| [todo_widget](./extensions/todo_widget/) | Give the agent a `todo` tool and a task list widget above the composer | [README](./extensions/todo_widget/README.md) |
+| [subagent](./extensions/subagent/) | Delegate work to isolated read-only subagents, from the model or `/subagent` | [README](./extensions/subagent/README.md) |
+| [todo](./extensions/todo/) | Give the agent a `todo` tool and a task list widget above the composer | [README](./extensions/todo/README.md) |
 
 **Tools** are one-shot programs that niminal runs only when the model calls
 them. They show up as typed tools next to the built-in ones.
@@ -48,8 +48,8 @@ Clone this repository, then copy the extension you want into your global
 extensions folder and mark it executable:
 
 ```bash
-git clone https://github.com/martineastwood/extensions_and_tools.git
-cp -r extensions_and_tools/extensions/pirate ~/.niminal/extensions/
+git clone https://github.com/martineastwood/niminal-extensions.git
+cp -r niminal-extensions/extensions/pirate ~/.niminal/extensions/
 chmod +x ~/.niminal/extensions/pirate/extension.py
 ```
 
@@ -64,8 +64,8 @@ layout, those folders work too.
 Tools go in a tools folder instead:
 
 ```bash
-cp -r extensions_and_tools/tools/tavily-search ~/.niminal/tools/
-chmod +x ~/.niminal/tools/tavily-search/web-search
+cp -r niminal-extensions/tools/tavily-search ~/.niminal/tools/
+chmod +x ~/.niminal/tools/tavily-search/web-search.py
 ```
 
 Restart niminal or run `/reload`. The model can now call the tool by name.
