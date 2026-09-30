@@ -29,6 +29,9 @@ const SYSTEM_PROMPT =
 const exchanges = []
 const pending = new Map()
 let active = false
+// Close while a request is in flight abandons that answer so a late result does
+// not reopen the panel. True host-side cancel of model.complete comes later.
+let abandoned = false
 
 const send = (message) => process.stdout.write(JSON.stringify(message) + '\n')
 
@@ -90,8 +93,9 @@ function conversation(messages) {
 }
 
 // The panel body is markdown, rendered and scrolled by niminal, so the answer
-// keeps its headings, lists, and code blocks however long it gets.
-function panel(question, answer, pending = false) {
+// keeps its headings, lists, and code blocks however long it gets. Close stays
+// available while Thinking so the side question can be abandoned early.
+function panel(question, answer) {
   return {
     key: WIDGET_KEY,
     title: 'btw',
@@ -100,16 +104,23 @@ function panel(question, answer, pending = false) {
       text: `**Q:** ${question}\n\n${answer}`,
       height: PANEL_HEIGHT
     }],
-    actions: pending ? [] : [{ id: 'close', label: 'Close' }]
+    actions: [{ id: 'close', label: 'Close' }]
   }
 }
 
-function thinking(active) {
+function clearPanel() {
+  send({
+    type: 'update',
+    widget: { key: WIDGET_KEY, title: '', content: [], actions: [] }
+  })
+}
+
+function thinking(activeThinking) {
   send({
     type: 'update',
     status: {
       key: WIDGET_KEY,
-      segments: active
+      segments: activeThinking
         ? [{ text: ' btw ', style: 'emphasis' }, { text: 'thinking', style: 'accent' }]
         : []
     }
@@ -124,10 +135,11 @@ function deny(id, message) {
 // as the panel is open and the answer follows as an update. Answering with the
 // model's reply instead would leave /btw looking dead until it arrived.
 function openPanel(id, question) {
-  send({ type: 'response', id, widget: panel(question, 'Thinking…', true) })
+  send({ type: 'response', id, widget: panel(question, 'Thinking…') })
 }
 
 function showAnswer(question, text) {
+  if (abandoned) return
   send({ type: 'update', widget: panel(question, text) })
 }
 
@@ -142,6 +154,7 @@ async function ask(message) {
     return
   }
   active = true
+  abandoned = false
   const context = message.context ?? {}
   const sections = []
   const history = conversation(Array.isArray(context.messages) ? context.messages : [])
@@ -164,6 +177,7 @@ async function ask(message) {
       max_tokens: 900,
       read_only_tools: true
     })
+    if (abandoned) return
     if (!result || result.cancelled) {
       showAnswer(question, 'btw cancelled')
       return
@@ -187,10 +201,8 @@ async function ask(message) {
 
 function act(message) {
   if (message.action === 'close') {
-    send({
-      type: 'update',
-      widget: { key: WIDGET_KEY, title: '', content: [], actions: [] }
-    })
+    if (active) abandoned = true
+    clearPanel()
   }
 }
 

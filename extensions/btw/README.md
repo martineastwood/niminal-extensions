@@ -51,17 +51,23 @@ answers as well as the main conversation:
 ## Reading the answer
 
 The panel body scrolls, so a long answer stays readable without leaving niminal.
-Focus the empty composer and press Tab, then:
 
-| Key | Effect |
+| Input | Effect |
 | --- | --- |
-| Up, Down | Scroll one row |
-| PageUp, PageDown | Scroll one page |
-| Tab | Move on to the panel's actions |
-| Escape | Leave the panel where it is |
+| Mouse wheel over the panel | Scroll the answer |
+| Mouse wheel outside the panel | Scroll the transcript |
+| Click the panel body | Focus it for keyboard scroll and Esc |
+| Click **Close** | Remove the panel |
+| Tab (empty composer) | Focus the panel |
+| Up, Down | Scroll one row when focused |
+| PageUp, PageDown | Scroll one page when focused |
+| Tab again | Move on to the panel's actions |
+| Escape (when focused) | Run **Close** and remove the panel |
 
-Press Tab again and press Enter on **Close** to remove the panel. You can keep
-typing and working in the composer while the panel is open.
+Typing in the composer clears panel focus, so Escape goes back to normal
+composer behavior. **Close** is available while the answer is still thinking,
+so you can abandon a side question early. You can keep typing and working in
+the composer while the panel is open.
 
 ## What the side question sees
 
@@ -87,7 +93,9 @@ costs the same as any other request of that size.
   see later messages or output from the still-running turn.
 - The panel body shows 12 rows at a time and scrolls.
 - Closing the panel hides the answer, and there is no way to bring it back other
-  than asking again.
+  than asking again. Close while Thinking abandons that side question; the model
+  call may still finish in the background, but its answer is discarded.
+
 - The side thread lives in the extension process. `/reload` or a restart forgets
   the earlier side questions.
 - Answers are not saved to the session, so `/resume` does not bring them back.
