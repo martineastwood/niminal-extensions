@@ -27,6 +27,7 @@ lifecycle events like the start and end of a turn.
 | [session_cleanup](./extensions/session_cleanup/) | Delete session files older than 30 days when you quit | [README](./extensions/session_cleanup/README.md) |
 | [subagent](./extensions/subagent/) | Delegate work to isolated read-only subagents, from the model or `/subagent` | [README](./extensions/subagent/README.md) |
 | [todo](./extensions/todo/) | Give the agent a `todo` tool and a task list widget above the composer | [README](./extensions/todo/README.md) |
+| [mcp](./extensions/mcp/) | Bridge stdio and remote MCP servers into model tools (`server__tool` names) | [README](./extensions/mcp/README.md) |
 
 **Tools** are one-shot programs that niminal runs only when the model calls
 them. They show up as typed tools next to the built-in ones.
