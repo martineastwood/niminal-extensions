@@ -91,7 +91,7 @@ Servers connect independently. If one server fails, the others still register th
 
 - tools only (no MCP resources or prompts)
 - remote auth via static headers only (no OAuth flow)
-- reload after you change `mcp.json` (`/reload` or restart niminal)
+- servers stay connected when you start a new session, so run `/reload` after you change `mcp.json`; a new session reuses the connections it already has
 
 ## Next steps
 

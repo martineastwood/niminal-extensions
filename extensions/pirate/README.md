@@ -33,3 +33,7 @@ instructions appended to the system prompt, so the agent answers with
 model requests; they are never written into the saved session.
 
 Disabling pirate mode restores normal responses from the next request on.
+
+The toggle lives in the extension process, so pirate mode stays on when you
+change sessions with `/new`, `/resume`, or `/fork`. `/reload` restarts the
+extension and turns it off.

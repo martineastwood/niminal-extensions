@@ -14,7 +14,7 @@ const send = (message) => process.stdout.write(JSON.stringify(message) + '\n')
 const DEFAULT_CAPABILITIES = ['network']
 const SUPPORTED_CAPABILITIES = new Set(['read', 'write', 'shell', 'network', 'user'])
 
-/** @type {Map<string, { client: Client, capabilities: string[], tools: string[] }>} */
+/** @type {Map<string, { client: Client, capabilities: string[], tools: object[] }>} */
 const servers = new Map()
 /** @type {Map<string, { server: string, tool: string }>} */
 const routes = new Map()
@@ -133,14 +133,13 @@ function remoteTransportMode(config) {
 
 async function registerConnectedServer(name, config, client, transportLabel) {
   const listed = await client.listTools()
-  const capabilities = serverCapabilities(config)
-  const count = (listed.tools ?? []).filter((tool) => tool?.name).length
-  servers.set(name, { client, capabilities, tools: [] })
+  const tools = (listed.tools ?? []).filter((tool) => tool?.name)
+  servers.set(name, { client, capabilities: serverCapabilities(config), tools })
   serverStatus.push({
     name,
     status: 'connected',
     transport: transportLabel,
-    tools: count
+    tools: tools.length
   })
 }
 
@@ -269,17 +268,10 @@ async function connectAll(workspace, trusted) {
   await Promise.all(jobs)
 }
 
-async function enrichToolsFromServers() {
+function exposeServerTools() {
   const tools = []
   for (const [serverName, entry] of servers) {
-    let listed
-    try {
-      listed = await entry.client.listTools()
-    } catch {
-      continue
-    }
-    for (const tool of listed.tools ?? []) {
-      if (!tool?.name) continue
+    for (const tool of entry.tools) {
       const exposed = toolName(serverName, tool.name)
       routes.set(exposed, { server: serverName, tool: tool.name })
       tools.push({
@@ -396,13 +388,12 @@ async function main() {
   const trusted = Boolean(init.trusted)
 
   await connectAll(workspace, trusted)
-  const tools = await enrichToolsFromServers()
+  const tools = exposeServerTools()
 
   send({
     type: 'register',
     commands: [{ name: 'mcp', description: 'Show MCP server connection status' }],
-    tools,
-    events: ['session_shutdown']
+    tools
   })
 
   rl.on('line', (line) => {
@@ -415,12 +406,6 @@ async function main() {
     }
     if (message.type === 'shutdown') {
       shutdownAll().then(() => process.exit(0))
-      return
-    }
-    if (message.type === 'event' && message.event === 'session_shutdown') {
-      shutdownAll().then(() => {
-        send({ type: 'response', id: message.id })
-      })
       return
     }
     if (message.type === 'tool') {

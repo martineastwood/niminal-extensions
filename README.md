@@ -40,8 +40,9 @@ them. They show up as typed tools next to the built-in ones.
 ## Before you install
 
 **Extensions and tools are executable programs.** niminal starts every
-extension it finds and keeps it running for the session, and it runs tools in
-your workspace. They can read and write files, run commands, and reach the
+extension it finds and keeps it running: switching sessions with `/new`,
+`/resume`, or `/fork` does not restart it, while `/reload` does. Tools run in
+your workspace. Both can read and write files, run commands, and reach the
 network, depending on what they declare and what you approve.
 
 Read the source of anything you install, and only install add-ons you trust.

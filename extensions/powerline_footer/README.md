@@ -35,8 +35,8 @@ style:
 | ` / ` | muted |
 | model | success |
 
-The values come from the session, so they match the provider and model you
-started niminal with.
+The values come from the session at the moment you run the command, so they
+follow `/provider`, `/model`, and a session you resume or start.
 
 Clear it again:
 
@@ -46,7 +46,10 @@ Clear it again:
 
 ## Limitations
 
-- The provider and model are read when niminal starts the extension, so after
-  switching model or provider mid-session, run `/reload` to refresh the footer.
+- The segment shows the provider and model from the last time you ran
+  `/footer_demo`, so run it again after the values change.
 - The segment only appears after you run `/footer_demo`; it does not show up on
   its own at startup.
+- The footer is this extension's own status segment. It is not refreshed by
+  `/reload`, which restarts the extension and clears the segment until you run
+  `/footer_demo` again.

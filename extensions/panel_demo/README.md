@@ -45,5 +45,7 @@ without leaving the composer.
 
 - The panel is a demo: the items are fixed and reset when the extension
   restarts.
+- Changing sessions does not restart the extension, so the panel and the items
+  you advanced stay as they were.
 - There is no action to hide the panel. Use `/reload` to restart the extension
   and clear it, or remove the extension directory.

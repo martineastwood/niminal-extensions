@@ -73,7 +73,7 @@ the composer while the panel is open.
 
 The model answers from the conversation, trimmed to the most recent 12 messages,
 each capped at 1500 characters, with the whole background capped at 24000
-characters. Earlier side questions in this run are included, up to the last 6.
+characters. Earlier side questions in this session are included, up to the last 6.
 
 The side question can read and search the workspace with the `read`, `grep`,
 `glob`, and `ls` tools. This helps when the code needed for an answer has not
@@ -96,8 +96,9 @@ costs the same as any other request of that size.
   than asking again. Close while Thinking abandons that side question; the model
   call may still finish in the background, but its answer is discarded.
 
-- The side thread lives in the extension process. `/reload` or a restart forgets
-  the earlier side questions.
+- The side thread lives in the extension process and belongs to one session.
+  `/new`, `/resume`, and `/fork` close the panel and forget the earlier side
+  questions, and so do `/reload` and a restart.
 - Answers are not saved to the session, so `/resume` does not bring them back.
 
 ## Next steps

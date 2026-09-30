@@ -84,8 +84,10 @@ it is still going:
 collect subagent 3 and summarize its findings
 ```
 
-Reports stay collectable for the rest of the session, so a background run started
-in one turn can be collected in the next.
+Reports stay collectable for the rest of the niminal run, so a background run
+started in one turn can be collected in the next. Changing sessions does not
+clear them: niminal keeps extensions running, so an id still resolves after
+`/new` or `/resume`.
 
 ## Agents
 
@@ -177,7 +179,11 @@ Each subagent picks a model id in this order:
 5. Omit `--model` and inherit your session model
 
 The active provider comes from niminal as `NIMINAL_PROVIDER` (your `/provider`
-choice). Use provider-keyed entries when you switch hosts often and slugs differ:
+choice), and niminal keeps it current: `session_start` and
+`session_settings_changed` report it again, so `/new`, `/resume`, `/provider`,
+and `/model` all follow along. Your session's reasoning level arrives the same
+way and becomes the default when no agent or `subagents.json` entry sets one.
+Use provider-keyed entries when you switch hosts often and slugs differ:
 
 ```json
 {
@@ -279,7 +285,10 @@ override file values.
 - The panel is live state only; reports stay collectable by id until the newest
   32 runs push them out.
 - Run `/reload` after changing `extension.mjs` or to refresh the agent list in
-  the registered tool description.
+  the registered tool description. A session change does not reload the
+  extension, so the tool description keeps the agent names it loaded with.
 - Project agents are ignored until the workspace is trusted.
+- A session change does not stop anything: running subagents keep going and the
+  panel stays up until they finish.
 - Running subagents are stopped when niminal exits. A child that ignores
   `SIGTERM` gets 1.5 seconds before it is killed.

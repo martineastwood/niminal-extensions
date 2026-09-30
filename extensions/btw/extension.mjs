@@ -5,7 +5,8 @@
 // so far as background, and shows the answer in a panel above the composer.
 // The main thread, its model context, and the saved session are untouched, so
 // you can check a detail without steering the agent off its task. Follow-up
-// questions continue the side thread, which lives in this process.
+// questions continue the side thread, which lives in this process and is
+// cleared by the session_start hook when you change sessions.
 import { randomUUID } from 'node:crypto'
 import readline from 'node:readline'
 
@@ -212,7 +213,8 @@ send({
     name: 'btw',
     description: 'Ask a side question without touching the main conversation',
     while_busy: true
-  }]
+  }],
+  events: ['session_start']
 })
 
 const input = readline.createInterface({ input: process.stdin })
@@ -230,6 +232,14 @@ input.on('line', (line) => {
     ask(message).catch((err) => {
       showAnswer(String(message.arguments ?? '').trim(), `btw failed: ${err.message}`)
     })
+  } else if (message.type === 'event' && message.event === 'session_start') {
+    // The process survives a session change, so the side thread and its panel
+    // belong to the session that just ended.
+    if (active) abandoned = true
+    exchanges.length = 0
+    clearPanel()
+    thinking(false)
+    send({ type: 'response', id: message.id })
   } else if (message.type === 'ui_action' && message.widget === WIDGET_KEY) {
     act(message)
   } else if (message.type === 'cancel') {

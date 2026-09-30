@@ -31,7 +31,8 @@ const READ_ONLY_LIST = READ_ONLY_TOOLS.join(',')
 // anything else is dropped rather than sent on to fail the run.
 const THINKING_LEVELS = ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max']
 const MAX_CHAIN_STEPS = 8
-// Every run keeps its report until the session ends, so the map is capped.
+// A report is kept for the life of this process, which outlives session
+// changes, so the map is capped.
 const MAX_RESULTS = 32
 const MAX_OUTPUT_LINES = 2000
 const MAX_OUTPUT_BYTES = 50 * 1024
@@ -209,8 +210,15 @@ function resourceRoots() {
   return { trusted, roots }
 }
 
+// What niminal started this extension with. session_start and
+// session_settings_changed keep both current: the process keeps running across
+// a session, provider, or reasoning-level change, so these events are how
+// provider-keyed models and the default thinking level follow it.
+let sessionProviderName = String(process.env.NIMINAL_PROVIDER ?? '').trim().toLowerCase()
+let sessionThinkingLevel = String(process.env.NIMINAL_REASONING_LEVEL ?? '')
+
 function sessionProvider() {
-  return String(process.env.NIMINAL_PROVIDER ?? '').trim().toLowerCase()
+  return sessionProviderName
 }
 
 function providerModelLookup(map, provider) {
@@ -325,8 +333,7 @@ function refreshRuntime() {
   }
   const agents = loadAgentsFromDisk(roots)
   const defaultAgent = agents[config.default_agent] ? config.default_agent : 'general'
-  const defaultThinking =
-    thinkingLevel(config.thinking) || thinkingLevel(process.env.NIMINAL_REASONING_LEVEL)
+  const defaultThinking = thinkingLevel(config.thinking) || thinkingLevel(sessionThinkingLevel)
   runtime = {
     agents,
     trusted,
@@ -488,7 +495,8 @@ send({
       required: ['id']
     },
     capabilities: ['read']
-  }]
+  }],
+  events: ['session_start', 'session_settings_changed']
 })
 
 // Every run, keyed by its number, so a background report can be collected long
@@ -712,7 +720,7 @@ function startRun(run) {
     args.push('--max-steps', String(run.maxSteps))
   }
   if (runtime.trusted) {
-    // The session already trusts this project, so its skills and instructions
+    // niminal reports this workspace as trusted, so its skills and instructions
     // load here too instead of being skipped for the lack of a prompt.
     args.push('--approve')
   }
@@ -934,7 +942,7 @@ function backgroundText(started) {
   const parts = started.map(({ entry }) =>
     `id ${entry.number} (${entry.label}) is running in the background`)
   return `${parts.join('; ')}.\n\nKeep working, then call subagent_result with that id to ` +
-    'collect the report. Results stay available for the rest of the session.'
+    'collect the report. Results stay available by id for the rest of this niminal run.'
 }
 
 async function collect(started) {
@@ -1063,7 +1071,7 @@ async function handleResult(message) {
     const known = [...results.keys()].map((number) => `id ${number}`).join(', ')
     sendError(message.id,
       `no subagent with id ${input.id}. ` +
-      (known ? `Known runs: ${known}.` : 'No subagent has run in this session yet.'))
+      (known ? `Known runs: ${known}.` : 'No subagent has run yet.'))
     return
   }
   const waitSeconds = Math.min(Math.max(Number(input.wait_seconds) || 0, 0), 300)
@@ -1115,6 +1123,20 @@ input.on('line', (line) => {
   if (message.type === 'initialize') {
     workspace = message.workspace || workspace
     refreshRuntime()
+  } else if (message.type === 'event' &&
+             (message.event === 'session_start' ||
+              message.event === 'session_settings_changed')) {
+    // niminal never restarts this process for a session or settings change, so
+    // these two events are how the active provider and reasoning level follow.
+    const payload = message.payload ?? {}
+    if (payload.provider) {
+      sessionProviderName = String(payload.provider).trim().toLowerCase()
+    }
+    if (payload.thinking !== undefined) {
+      sessionThinkingLevel = String(payload.thinking)
+    }
+    refreshRuntime()
+    send({ type: 'response', id: message.id })
   } else if (message.type === 'tool' && message.name === 'subagent') {
     handleTool(message).catch((err) => {
       sendError(message.id, `subagent failed: ${err.message}`)
