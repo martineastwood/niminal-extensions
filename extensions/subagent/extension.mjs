@@ -3,16 +3,18 @@
 //
 // Each run starts "niminal --mode json --no-session" in a fresh read-only
 // session and returns the subagent's final report with its token usage. Agents
-// are the built-in explore and general, plus any *.md files under a subagents/
+// are built-in scout, general, planner, reviewer, and oracle, plus any *.md files
+// under a subagents/
 // folder in the global or project .niminal and .agents roots. Project agents
 // need a trusted workspace. One call carries a task, a parallel batch, or a
 // sequential chain, and a run can go to the background and be collected later
 // with subagent_result. Runs show in a Subagents panel above the composer, and
 // calls beyond the concurrency limit wait for a slot instead of failing.
 import { spawn } from 'node:child_process'
-import { existsSync, readFileSync, readdirSync } from 'node:fs'
-import { homedir } from 'node:os'
+import { existsSync, readFileSync, readdirSync, writeFileSync } from 'node:fs'
+import { homedir, tmpdir } from 'node:os'
 import { basename, extname, join } from 'node:path'
+import { randomBytes } from 'node:crypto'
 import readline from 'node:readline'
 
 const send = (message) => process.stdout.write(JSON.stringify(message) + '\n')
@@ -31,16 +33,18 @@ const THINKING_LEVELS = ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'm
 const MAX_CHAIN_STEPS = 8
 // Every run keeps its report until the session ends, so the map is capped.
 const MAX_RESULTS = 32
+const MAX_OUTPUT_LINES = 2000
+const MAX_OUTPUT_BYTES = 50 * 1024
 
 const BUILTIN_AGENTS = {
-  explore: {
-    description: 'find where code lives, fastest for search',
+  scout: {
+    description: 'fast codebase recon for handoff: files, entry points, risks',
     tools: 'read,grep,glob,ls',
     model: '',
     prompt:
-      'You are a read-only code search subagent. Locate the code the task asks about: ' +
-      'prefer grep and glob over reading whole files, follow imports until you can name the ' +
-      'files and functions that matter, then report.'
+      'You are a read-only scout subagent. Explore the codebase for the task: prefer grep and ' +
+      'glob over reading whole files, follow imports, then return compressed findings with ' +
+      'relevant paths, symbols, data flow, and risks for the parent agent.'
   },
   general: {
     description: 'multi-step research across files and skills',
@@ -49,6 +53,32 @@ const BUILTIN_AGENTS = {
     prompt:
       'You are a read-only research subagent. Work through the task in steps and check every ' +
       'claim against the code before reporting.'
+  },
+  planner: {
+    description: 'read-only implementation plan with acceptance criteria',
+    tools: 'read,grep,glob,ls',
+    model: '',
+    prompt:
+      'You are a read-only planner subagent. Read the code and constraints, then produce a ' +
+      'numbered implementation plan with acceptance criteria and concrete verification steps. ' +
+      'Do not edit files or assume changes are already made.'
+  },
+  reviewer: {
+    description: 'code review for correctness, tests, and simplicity',
+    tools: 'read,grep,glob,ls',
+    model: '',
+    prompt:
+      'You are a read-only reviewer subagent. Review the code or change described in the task ' +
+      'for bugs, missing tests, edge cases, and unnecessary complexity. Cite file paths and lines.'
+  },
+  oracle: {
+    description: 'second opinion: challenge assumptions before acting',
+    tools: 'read,grep,glob,ls',
+    model: '',
+    prompt:
+      'You are a read-only oracle subagent. Challenge assumptions, surface what the parent might ' +
+      'be missing, and give a direct second opinion. Do not edit files or prescribe changes you ' +
+      'cannot verify in the repo.'
   }
 }
 
@@ -148,72 +178,209 @@ function agentFromFile(file) {
 }
 
 // Global files first, then project files, and the portable .agents layout
-// before .niminal, so the last file read wins. niminal orders its own resources
-// the same way. It runs extensions in the workspace, so process.cwd() is the
-// workspace.
-//
-// niminal exports NIMINAL_TRUSTED=0 for a workspace it has not trusted, and an
-// untrusted project must not be able to inject agent prompts or subagents.json
-// settings. Global agents always load.
+// before .niminal, so the last file read wins.
 const GLOBAL_ROOTS = [join(homedir(), '.agents'), join(homedir(), '.niminal')]
-const PROJECT_ROOTS = [join(workspace, '.agents'), join(workspace, '.niminal')]
-const trusted = process.env.NIMINAL_TRUSTED !== '0'
-const RESOURCE_ROOTS = trusted ? [...GLOBAL_ROOTS, ...PROJECT_ROOTS] : GLOBAL_ROOTS
-
-const agentDirs = RESOURCE_ROOTS.map((root) => join(root, 'subagents'))
-
-const config = { ...DEFAULT_CONFIG }
-for (const root of RESOURCE_ROOTS) {
-  Object.assign(config, readJson(join(root, 'subagents.json')) || {})
-}
-if (!trusted) {
-  process.stderr.write(
-    'subagent: ignoring project agents and subagents.json: project not trusted ' +
-    '(use /trust on or --approve)\n')
-}
-
-const AGENTS = Object.fromEntries(
-  Object.entries(BUILTIN_AGENTS).map(([name, agent]) => [name, { ...agent }]))
-for (const dir of agentDirs) {
-  let entries = []
-  try {
-    entries = readdirSync(dir)
-  } catch {
-    continue
-  }
-  for (const entry of entries.sort()) {
-    if (!entry.endsWith('.md')) continue
-    const parsed = agentFromFile(join(dir, entry))
-    if (!parsed) continue
-    const { name, ...agent } = parsed
-    AGENTS[name] = agent
-  }
-}
 
 function positiveNumber(value, fallback) {
   const number = Number(value)
   return Number.isFinite(number) && number > 0 ? number : fallback
 }
 
-const DEFAULT_AGENT = AGENTS[config.default_agent] ? config.default_agent : 'general'
-const maxConcurrent = positiveNumber(process.env.SUBAGENT_MAX_CONCURRENT,
-  positiveNumber(config.max_concurrent, 4))
-const defaultTimeoutSeconds = positiveNumber(process.env.SUBAGENT_TIMEOUT_SECONDS,
-  positiveNumber(config.timeout_seconds, 1800))
-const defaultModel = process.env.SUBAGENT_DEFAULT_MODEL || config.default_model || ''
-// The session's own thinking level is inherited when nothing else sets one, so
-// a subagent reasons as hard as the turn that asked for it.
-const defaultThinking =
-  thinkingLevel(config.thinking) || thinkingLevel(process.env.NIMINAL_REASONING_LEVEL)
-if (config.thinking && !thinkingLevel(config.thinking)) {
-  process.stderr.write(`subagent: ignoring thinking level "${config.thinking}"\n`)
+let runtime = {
+  agents: {},
+  trusted: true,
+  defaultAgent: 'general',
+  maxConcurrent: 4,
+  defaultTimeoutSeconds: 1800,
+  defaultModel: '',
+  defaultModels: {},
+  models: {},
+  defaultThinking: '',
+  defaultMaxSteps: 0
 }
-const defaultMaxSteps = positiveNumber(config.max_steps, 0)
 
-// The model sees this list in the tool schema, so it names every agent, what
-// each one can do, and what each one is for.
-const agentList = () => Object.entries(AGENTS)
-  .map(([name, agent]) => `${name} (${agent.tools}): ${agent.description}`).join('; ')
+let warnedUntrustedProject = false
+
+function resourceRoots() {
+  const trusted = process.env.NIMINAL_TRUSTED !== '0'
+  const roots = trusted
+    ? [...GLOBAL_ROOTS, join(workspace, '.agents'), join(workspace, '.niminal')]
+    : GLOBAL_ROOTS
+  return { trusted, roots }
+}
+
+function sessionProvider() {
+  return String(process.env.NIMINAL_PROVIDER ?? '').trim().toLowerCase()
+}
+
+function providerModelLookup(map, provider) {
+  if (!map || typeof map !== 'object' || Array.isArray(map) || !provider) {
+    return ''
+  }
+  if (typeof map[provider] === 'string') {
+    return map[provider].trim()
+  }
+  for (const [key, value] of Object.entries(map)) {
+    if (key.toLowerCase() === provider && typeof value === 'string') {
+      return value.trim()
+    }
+  }
+  return ''
+}
+
+function mergeSubagentsConfig(target, source) {
+  if (!source || typeof source !== 'object') {
+    return
+  }
+  for (const [key, value] of Object.entries(source)) {
+    if (key === 'models' && value && typeof value === 'object' && !Array.isArray(value)) {
+      target.models ??= {}
+      for (const [agent, providers] of Object.entries(value)) {
+        const agentKey = String(agent).trim().toLowerCase()
+        if (!providers || typeof providers !== 'object' || Array.isArray(providers)) {
+          continue
+        }
+        target.models[agentKey] = { ...(target.models[agentKey] || {}) }
+        for (const [prov, model] of Object.entries(providers)) {
+          if (typeof model !== 'string') {
+            continue
+          }
+          const id = model.trim()
+          if (!id) {
+            continue
+          }
+          target.models[agentKey][String(prov).trim().toLowerCase()] = id
+        }
+      }
+      continue
+    }
+    if (key === 'default_models' && value && typeof value === 'object' && !Array.isArray(value)) {
+      target.default_models ??= {}
+      for (const [prov, model] of Object.entries(value)) {
+        if (typeof model !== 'string') {
+          continue
+        }
+        const id = model.trim()
+        if (!id) {
+          continue
+        }
+        target.default_models[String(prov).trim().toLowerCase()] = id
+      }
+      continue
+    }
+    target[key] = value
+  }
+}
+
+function resolveModel(agentName, agent) {
+  const name = String(agentName ?? '').trim().toLowerCase()
+  const provider = sessionProvider()
+  const fromMap = providerModelLookup(runtime.models[name], provider)
+  if (fromMap) {
+    return fromMap
+  }
+  const fromAgent = String(agent?.model ?? '').trim()
+  if (fromAgent) {
+    return fromAgent
+  }
+  const fromDefaultMap = providerModelLookup(runtime.defaultModels, provider)
+  if (fromDefaultMap) {
+    return fromDefaultMap
+  }
+  return runtime.defaultModel
+}
+
+function loadAgentsFromDisk(roots) {
+  const agents = Object.fromEntries(
+    Object.entries(BUILTIN_AGENTS).map(([name, agent]) => [name, { ...agent }]))
+  for (const dir of roots.map((root) => join(root, 'subagents'))) {
+    let entries = []
+    try {
+      entries = readdirSync(dir)
+    } catch {
+      continue
+    }
+    for (const entry of entries.sort()) {
+      if (!entry.endsWith('.md')) continue
+      const parsed = agentFromFile(join(dir, entry))
+      if (!parsed) continue
+      const { name, ...agent } = parsed
+      agents[name] = agent
+    }
+  }
+  return agents
+}
+
+function refreshRuntime() {
+  const { trusted, roots } = resourceRoots()
+  const config = { ...DEFAULT_CONFIG, models: {}, default_models: {} }
+  for (const root of roots) {
+    mergeSubagentsConfig(config, readJson(join(root, 'subagents.json')))
+  }
+  if (!trusted && !warnedUntrustedProject) {
+    warnedUntrustedProject = true
+    process.stderr.write(
+      'subagent: ignoring project agents and subagents.json: project not trusted ' +
+      '(use /trust on or --approve)\n')
+  }
+  const agents = loadAgentsFromDisk(roots)
+  const defaultAgent = agents[config.default_agent] ? config.default_agent : 'general'
+  const defaultThinking =
+    thinkingLevel(config.thinking) || thinkingLevel(process.env.NIMINAL_REASONING_LEVEL)
+  runtime = {
+    agents,
+    trusted,
+    defaultAgent,
+    maxConcurrent: positiveNumber(process.env.SUBAGENT_MAX_CONCURRENT,
+      positiveNumber(config.max_concurrent, 4)),
+    defaultTimeoutSeconds: positiveNumber(process.env.SUBAGENT_TIMEOUT_SECONDS,
+      positiveNumber(config.timeout_seconds, 1800)),
+    defaultModel: process.env.SUBAGENT_DEFAULT_MODEL || config.default_model || '',
+    defaultModels: config.default_models || {},
+    models: config.models || {},
+    defaultThinking,
+    defaultMaxSteps: positiveNumber(config.max_steps, 0)
+  }
+}
+
+function agentList(agents) {
+  return Object.entries(agents)
+    .map(([name, agent]) => `${name} (${agent.tools}): ${agent.description}`).join('; ')
+}
+
+function truncateForParent(text) {
+  if (!text) return text
+  const bytes = Buffer.byteLength(text, 'utf8')
+  const lines = text.split('\n')
+  if (lines.length <= MAX_OUTPUT_LINES && bytes <= MAX_OUTPUT_BYTES) {
+    return text
+  }
+  let truncated = text
+  if (lines.length > MAX_OUTPUT_LINES) {
+    truncated = lines.slice(-MAX_OUTPUT_LINES).join('\n')
+  }
+  while (Buffer.byteLength(truncated, 'utf8') > MAX_OUTPUT_BYTES) {
+    const index = truncated.indexOf('\n')
+    if (index === -1) {
+      truncated = truncated.slice(-MAX_OUTPUT_BYTES)
+      break
+    }
+    truncated = truncated.slice(index + 1)
+  }
+  const spillPath = join(tmpdir(), `niminal-subagent-${randomBytes(8).toString('hex')}.txt`)
+  writeFileSync(spillPath, text, { mode: 0o600 })
+  return `${truncated}\n\nFull output saved to: ${spillPath}`
+}
+
+function parentFacingText(text) {
+  return truncateForParent(text)
+}
+
+refreshRuntime()
+const registeredAgentGuide = agentList(runtime.agents)
+const registeredMaxConcurrent = runtime.maxConcurrent
+const registeredDefaultAgent = runtime.defaultAgent
+const registeredDefaultTimeout = runtime.defaultTimeoutSeconds
 
 send({
   type: 'register',
@@ -231,9 +398,11 @@ send({
       'the prior step\'s report. Subagents can read files but cannot edit them or run commands, ' +
       'and they cannot start further subagents, so delegate investigation, not changes. Use ' +
       'them for broad investigation, parallel research, and double-checking; do trivial lookups ' +
-      `yourself. Calls made in the same step run in parallel, up to ${maxConcurrent} at a time, ` +
+      `yourself. Calls made in the same step run in parallel, up to ${registeredMaxConcurrent} at a time, ` +
       'and further calls wait for a slot. Set run_in_background to start work and carry on: the ' +
-      'response carries an id, and subagent_result collects the report when it is ready.',
+      'response carries an id, and subagent_result collects the report when it is ready. ' +
+      `Known agents at register time: ${registeredAgentGuide}. Custom agents from disk work ` +
+      'immediately; run /reload to refresh this list in the tool description.',
     input_schema: {
       type: 'object',
       properties: {
@@ -250,8 +419,7 @@ send({
               task: { type: 'string', description: 'Complete, self-contained instructions.' },
               agent: {
                 type: 'string',
-                enum: Object.keys(AGENTS),
-                description: `Agent for this task. Defaults to ${DEFAULT_AGENT}.`
+                description: `Agent name. Defaults to ${registeredDefaultAgent}.`
               },
               label: { type: 'string', description: 'Short name shown in the panel.' }
             },
@@ -268,8 +436,7 @@ send({
               task: { type: 'string', description: 'Instructions, optionally using {previous}.' },
               agent: {
                 type: 'string',
-                enum: Object.keys(AGENTS),
-                description: `Agent for this step. Defaults to ${DEFAULT_AGENT}.`
+                description: `Agent name. Defaults to ${registeredDefaultAgent}.`
               },
               label: { type: 'string', description: 'Short name shown in the panel.' }
             },
@@ -282,9 +449,8 @@ send({
         },
         agent: {
           type: 'string',
-          enum: Object.keys(AGENTS),
-          description: agentList() +
-            `. All agents are read-only. Defaults to ${DEFAULT_AGENT}.`
+          description: registeredAgentGuide +
+            `. All agents are read-only. Defaults to ${registeredDefaultAgent}.`
         },
         run_in_background: {
           type: 'boolean',
@@ -294,7 +460,7 @@ send({
         },
         timeout_seconds: {
           type: 'number',
-          description: `Kill the subagent after this many seconds. Defaults to ${defaultTimeoutSeconds}.`
+          description: `Kill the subagent after this many seconds. Defaults to ${registeredDefaultTimeout}.`
         }
       },
       required: []
@@ -514,7 +680,7 @@ function forgetOldResults() {
 }
 
 function pump() {
-  while (queue.length && activeCount() < maxConcurrent) {
+  while (queue.length && activeCount() < runtime.maxConcurrent) {
     const run = runs.get(queue.shift())
     if (run && run.phase === 'queued') startRun(run)
   }
@@ -545,24 +711,24 @@ function startRun(run) {
   if (run.maxSteps) {
     args.push('--max-steps', String(run.maxSteps))
   }
-  if (trusted) {
+  if (runtime.trusted) {
     // The session already trusts this project, so its skills and instructions
     // load here too instead of being skipped for the lack of a prompt.
     args.push('--approve')
   }
-  args.push(run.task)
 
   let child
   try {
     // Not detached: the subagent shares this extension's process group, so a
     // niminal that gives up on this extension still kills the subagent.
     child = spawn(resolveNiminalBin(), args,
-      { cwd: workspace, stdio: ['ignore', 'pipe', 'pipe'] })
+      { cwd: workspace, stdio: ['pipe', 'pipe', 'pipe'] })
   } catch (err) {
     finishRun(run, { text: `subagent could not start niminal: ${err.message}`, isError: true })
     return
   }
   run.child = child
+  child.stdin.end(run.task)
 
   let steps = 0
   let finalText = ''
@@ -683,8 +849,8 @@ function makeLabel(raw, task) {
 }
 
 function usageText() {
-  return 'Usage: /subagent [agent] <task>. Agents: ' + agentList() +
-    `. Defaults to ${DEFAULT_AGENT}.`
+  return 'Usage: /subagent [agent] <task>. Agents: ' + agentList(runtime.agents) +
+    `. Defaults to ${runtime.defaultAgent}.`
 }
 
 function sendError(id, text) {
@@ -692,7 +858,7 @@ function sendError(id, text) {
 }
 
 function agentNames() {
-  return Object.keys(AGENTS).join(', ')
+  return Object.keys(runtime.agents).join(', ')
 }
 
 // A bare task, a parallel batch, or a sequential chain. Only one of the three,
@@ -721,7 +887,7 @@ function planJobs(input) {
 }
 
 function timeoutFor(value) {
-  if (value === undefined) return defaultTimeoutSeconds
+  if (value === undefined) return runtime.defaultTimeoutSeconds
   const seconds = Number(value)
   return Number.isFinite(seconds) && seconds > 0 ? seconds : 0
 }
@@ -736,7 +902,7 @@ function itemObject(item) {
 // batch can mix agents while sharing the timeout.
 function jobFor(item, input, callId, index, timeoutSeconds) {
   const source = itemObject(item)
-  const { agent } = agentFor(source.agent ?? input.agent)
+  const { name, agent } = agentFor(source.agent ?? input.agent)
   if (!agent) {
     return { error: `subagent "agent" must be one of: ${agentNames()}.` }
   }
@@ -751,17 +917,17 @@ function jobFor(item, input, callId, index, timeoutSeconds) {
       task,
       label: makeLabel(source.label ?? input.label, task),
       agent,
-      model: agent.model || defaultModel,
-      thinking: agent.thinking || defaultThinking,
-      maxSteps: agent.maxSteps || defaultMaxSteps,
+      model: resolveModel(name, agent),
+      thinking: agent.thinking || runtime.defaultThinking,
+      maxSteps: agent.maxSteps || runtime.defaultMaxSteps,
       timeoutSeconds
     }
   }
 }
 
 function agentFor(raw) {
-  const name = String(raw ?? '').trim().toLowerCase() || DEFAULT_AGENT
-  return { name, agent: AGENTS[name] }
+  const name = String(raw ?? '').trim().toLowerCase() || runtime.defaultAgent
+  return { name, agent: runtime.agents[name] }
 }
 
 function backgroundText(started) {
@@ -808,12 +974,13 @@ function joinedReports(parts) {
     const title = parts.length > 1
       ? `## ${index + 1}. ${part.label}${part.result.isError ? ' (failed)' : ''}\n`
       : ''
-    return `${title}${part.result.text}`
+    return `${title}${parentFacingText(part.result.text)}`
   }).join('\n\n')
   return heading + body
 }
 
 async function handleTool(message) {
+  refreshRuntime()
   const input = message.arguments || {}
   const timeoutSeconds = timeoutFor(input.timeout_seconds)
   if (!timeoutSeconds) {
@@ -889,6 +1056,7 @@ function pendingText(entry) {
 }
 
 async function handleResult(message) {
+  refreshRuntime()
   const input = message.arguments || {}
   const entry = results.get(Number(input.id))
   if (!entry) {
@@ -906,7 +1074,7 @@ async function handleResult(message) {
   send({
     type: 'response',
     id: message.id,
-    content: [{ type: 'text', text: done ? entry.result.text : pendingText(entry) }],
+    content: [{ type: 'text', text: done ? parentFacingText(entry.result.text) : pendingText(entry) }],
     is_error: done && entry.result.isError
   })
 }
@@ -914,28 +1082,29 @@ async function handleResult(message) {
 // /subagent [agent] <task> runs one subagent and prints its report. A leading
 // word only counts as an agent when it names one, so a normal task is safe.
 async function handleCommand(message) {
+  refreshRuntime()
   const args = String(message.arguments ?? '').trim()
   const first = args.split(/\s+/)[0].toLowerCase()
-  const name = AGENTS[first] ? first : DEFAULT_AGENT
-  const task = AGENTS[first] ? args.slice(first.length).trim() : args
+  const name = runtime.agents[first] ? first : runtime.defaultAgent
+  const task = runtime.agents[first] ? args.slice(first.length).trim() : args
   if (!task) {
     send({ type: 'response', id: message.id, message: usageText() })
     return
   }
-  const agent = AGENTS[name]
+  const agent = runtime.agents[name]
   const { entry } = runSubagent({
     callId: `command:${message.id}`,
     index: 0,
     task,
     label: makeLabel('', task),
     agent,
-    model: agent.model || defaultModel,
-    thinking: agent.thinking || defaultThinking,
-    maxSteps: agent.maxSteps || defaultMaxSteps,
-    timeoutSeconds: defaultTimeoutSeconds
+    model: resolveModel(name, agent),
+    thinking: agent.thinking || runtime.defaultThinking,
+    maxSteps: agent.maxSteps || runtime.defaultMaxSteps,
+    timeoutSeconds: runtime.defaultTimeoutSeconds
   })
   await entry.done
-  send({ type: 'response', id: message.id, message: entry.result.text })
+  send({ type: 'response', id: message.id, message: parentFacingText(entry.result.text) })
 }
 
 const input = readline.createInterface({ input: process.stdin })
@@ -945,6 +1114,7 @@ input.on('line', (line) => {
   try { message = JSON.parse(line) } catch { return }
   if (message.type === 'initialize') {
     workspace = message.workspace || workspace
+    refreshRuntime()
   } else if (message.type === 'tool' && message.name === 'subagent') {
     handleTool(message).catch((err) => {
       sendError(message.id, `subagent failed: ${err.message}`)
