@@ -295,6 +295,14 @@ async function enrichToolsFromServers() {
   return tools
 }
 
+function toolsForServer(name) {
+  const names = []
+  for (const [exposed, route] of routes) {
+    if (route.server === name) names.push(exposed)
+  }
+  return names.sort()
+}
+
 function mcpStatusText() {
   const lines = ['MCP servers:']
   if (serverStatus.length === 0) {
@@ -310,6 +318,9 @@ function mcpStatusText() {
     }
     if (row.detail) line += ` — ${row.detail}`
     lines.push(line)
+    for (const tool of toolsForServer(row.name)) {
+      lines.push(`    ${tool}`)
+    }
   }
   lines.push('')
   lines.push(`Registered tools: ${routes.size}`)

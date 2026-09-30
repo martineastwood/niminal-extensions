@@ -83,7 +83,7 @@ Tools are exposed as `{server}__{tool}`. For example, a `read_file` tool on the 
 
 ## Status and failures
 
-Run `/mcp` to see each configured server, transport (`stdio`, `http`, or `sse`), how many tools connected, and any errors.
+Run `/mcp` to see each configured server, transport (`stdio`, `http`, or `sse`), how many tools connected, the registered tool names, and any errors.
 
 Servers connect independently. If one server fails, the others still register their tools.
 
