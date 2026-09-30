@@ -1,12 +1,14 @@
 #!/usr/bin/env node
-// subagent: expose niminal subagents as a model tool and a slash command.
+// subagent: expose niminal subagents as model tools and a slash command.
 //
 // Each run starts "niminal --mode json --no-session" in a fresh read-only
 // session and returns the subagent's final report with its token usage. Agents
 // are the built-in explore and general, plus any *.md files under a subagents/
-// folder in the global or project .niminal and .agents roots. Runs show in a
-// Subagents panel above the composer, and calls beyond the concurrency limit
-// wait for a slot instead of failing.
+// folder in the global or project .niminal and .agents roots. Project agents
+// need a trusted workspace. One call carries a task, a parallel batch, or a
+// sequential chain, and a run can go to the background and be collected later
+// with subagent_result. Runs show in a Subagents panel above the composer, and
+// calls beyond the concurrency limit wait for a slot instead of failing.
 import { spawn } from 'node:child_process'
 import { existsSync, readFileSync, readdirSync } from 'node:fs'
 import { homedir } from 'node:os'
@@ -22,6 +24,13 @@ let workspace = process.cwd()
 // built-ins; anything else is dropped with a warning.
 const READ_ONLY_TOOLS = ['read', 'grep', 'glob', 'ls', 'skill']
 const READ_ONLY_LIST = READ_ONLY_TOOLS.join(',')
+
+// niminal accepts these levels for --thinking, so an agent file that names
+// anything else is dropped rather than sent on to fail the run.
+const THINKING_LEVELS = ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max']
+const MAX_CHAIN_STEPS = 8
+// Every run keeps its report until the session ends, so the map is capped.
+const MAX_RESULTS = 32
 
 const BUILTIN_AGENTS = {
   explore: {
@@ -47,7 +56,9 @@ const DEFAULT_CONFIG = {
   max_concurrent: 4,
   timeout_seconds: 1800,
   default_agent: 'general',
-  default_model: ''
+  default_model: '',
+  thinking: '',
+  max_steps: 0
 }
 
 // Without this, a subagent that finishes with "done" reports nothing useful.
@@ -86,6 +97,11 @@ function parseFrontmatter(text) {
   return { fields, body: lines.slice(index).join('\n').trim() }
 }
 
+function thinkingLevel(value) {
+  const level = String(value ?? '').trim().toLowerCase()
+  return THINKING_LEVELS.includes(level) ? level : ''
+}
+
 function agentFromFile(file) {
   let text
   try {
@@ -107,11 +123,26 @@ function agentFromFile(file) {
     process.stderr.write(
       `subagent: agent "${name}" ignores non-read-only tools: ${dropped.join(', ')}\n`)
   }
+  const thinking = thinkingLevel(fields.thinking)
+  if (fields.thinking && !thinking) {
+    process.stderr.write(
+      `subagent: agent "${name}" ignores thinking level "${fields.thinking}" ` +
+      `(use ${THINKING_LEVELS.join(', ')})\n`)
+  }
+  const steps = Number.parseInt(fields.max_steps ?? '', 10)
+  const maxSteps = Number.isInteger(steps) && steps > 0 ? steps : 0
+  if (fields.max_steps && !maxSteps) {
+    process.stderr.write(`subagent: agent "${name}" ignores max_steps "${fields.max_steps}"\n`)
+  }
   return {
     name,
-    description: fields.description || `custom agent from ${basename(file)}`,
+    // The model picks an agent by its description, so an agent file without one
+    // falls back to the prompt's first line rather than hiding its purpose.
+    description: fields.description || body.split('\n')[0].trim().replace(/\.$/, '').slice(0, 120),
     tools: tools.length ? tools.join(',') : READ_ONLY_LIST,
     model: fields.model || '',
+    thinking,
+    maxSteps,
     prompt: body
   }
 }
@@ -120,17 +151,25 @@ function agentFromFile(file) {
 // before .niminal, so the last file read wins. niminal orders its own resources
 // the same way. It runs extensions in the workspace, so process.cwd() is the
 // workspace.
-const RESOURCE_ROOTS = [
-  join(homedir(), '.agents'),
-  join(homedir(), '.niminal'),
-  join(workspace, '.agents'),
-  join(workspace, '.niminal')
-]
+//
+// niminal exports NIMINAL_TRUSTED=0 for a workspace it has not trusted, and an
+// untrusted project must not be able to inject agent prompts or subagents.json
+// settings. Global agents always load.
+const GLOBAL_ROOTS = [join(homedir(), '.agents'), join(homedir(), '.niminal')]
+const PROJECT_ROOTS = [join(workspace, '.agents'), join(workspace, '.niminal')]
+const trusted = process.env.NIMINAL_TRUSTED !== '0'
+const RESOURCE_ROOTS = trusted ? [...GLOBAL_ROOTS, ...PROJECT_ROOTS] : GLOBAL_ROOTS
+
 const agentDirs = RESOURCE_ROOTS.map((root) => join(root, 'subagents'))
 
 const config = { ...DEFAULT_CONFIG }
 for (const root of RESOURCE_ROOTS) {
   Object.assign(config, readJson(join(root, 'subagents.json')) || {})
+}
+if (!trusted) {
+  process.stderr.write(
+    'subagent: ignoring project agents and subagents.json: project not trusted ' +
+    '(use /trust on or --approve)\n')
 }
 
 const AGENTS = Object.fromEntries(
@@ -162,6 +201,19 @@ const maxConcurrent = positiveNumber(process.env.SUBAGENT_MAX_CONCURRENT,
 const defaultTimeoutSeconds = positiveNumber(process.env.SUBAGENT_TIMEOUT_SECONDS,
   positiveNumber(config.timeout_seconds, 1800))
 const defaultModel = process.env.SUBAGENT_DEFAULT_MODEL || config.default_model || ''
+// The session's own thinking level is inherited when nothing else sets one, so
+// a subagent reasons as hard as the turn that asked for it.
+const defaultThinking =
+  thinkingLevel(config.thinking) || thinkingLevel(process.env.NIMINAL_REASONING_LEVEL)
+if (config.thinking && !thinkingLevel(config.thinking)) {
+  process.stderr.write(`subagent: ignoring thinking level "${config.thinking}"\n`)
+}
+const defaultMaxSteps = positiveNumber(config.max_steps, 0)
+
+// The model sees this list in the tool schema, so it names every agent, what
+// each one can do, and what each one is for.
+const agentList = () => Object.entries(AGENTS)
+  .map(([name, agent]) => `${name} (${agent.tools}): ${agent.description}`).join('; ')
 
 send({
   type: 'register',
@@ -172,18 +224,57 @@ send({
   tools: [{
     name: 'subagent',
     description:
-      'Run an isolated read-only subagent in its own niminal session and return its final ' +
-      'report. The subagent cannot see this conversation, so give it a complete, ' +
-      'self-contained task including file paths and what to report. It can read files but ' +
-      'cannot edit them or run commands, so delegate investigation, not changes. Use it for ' +
-      'broad investigation, parallel research, and double-checking; do trivial lookups ' +
-      'yourself. Calls made in the same step run in parallel, up to the concurrency limit.',
+      'Run isolated read-only subagents in their own niminal sessions and return their final ' +
+      'reports. A subagent cannot see this conversation, so every task must be complete and ' +
+      'self-contained, including file paths and what to report. One call carries a single ' +
+      '"task", a parallel "tasks" batch, or a sequential "chain" where "{previous}" stands for ' +
+      'the prior step\'s report. Subagents can read files but cannot edit them or run commands, ' +
+      'and they cannot start further subagents, so delegate investigation, not changes. Use ' +
+      'them for broad investigation, parallel research, and double-checking; do trivial lookups ' +
+      `yourself. Calls made in the same step run in parallel, up to ${maxConcurrent} at a time, ` +
+      'and further calls wait for a slot. Set run_in_background to start work and carry on: the ' +
+      'response carries an id, and subagent_result collects the report when it is ready.',
     input_schema: {
       type: 'object',
       properties: {
         task: {
           type: 'string',
-          description: 'Complete, self-contained instructions for the subagent.'
+          description: 'Complete, self-contained instructions for one subagent. Use with "agent".'
+        },
+        tasks: {
+          type: 'array',
+          description: 'Parallel batch: start every item at once and wait for all of them.',
+          items: {
+            type: 'object',
+            properties: {
+              task: { type: 'string', description: 'Complete, self-contained instructions.' },
+              agent: {
+                type: 'string',
+                enum: Object.keys(AGENTS),
+                description: `Agent for this task. Defaults to ${DEFAULT_AGENT}.`
+              },
+              label: { type: 'string', description: 'Short name shown in the panel.' }
+            },
+            required: ['task']
+          }
+        },
+        chain: {
+          type: 'array',
+          description: 'Sequential steps: each step runs after the last one reports. In a step ' +
+            'task, "{previous}" is replaced by the previous step\'s report.',
+          items: {
+            type: 'object',
+            properties: {
+              task: { type: 'string', description: 'Instructions, optionally using {previous}.' },
+              agent: {
+                type: 'string',
+                enum: Object.keys(AGENTS),
+                description: `Agent for this step. Defaults to ${DEFAULT_AGENT}.`
+              },
+              label: { type: 'string', description: 'Short name shown in the panel.' }
+            },
+            required: ['task']
+          }
         },
         label: {
           type: 'string',
@@ -192,25 +283,54 @@ send({
         agent: {
           type: 'string',
           enum: Object.keys(AGENTS),
-          description: Object.entries(AGENTS)
-            .map(([name, agent]) => `${name}: ${agent.description}`)
-            .join('; ') + `. Defaults to ${DEFAULT_AGENT}.`
+          description: agentList() +
+            `. All agents are read-only. Defaults to ${DEFAULT_AGENT}.`
+        },
+        run_in_background: {
+          type: 'boolean',
+          description: 'Return as soon as the run starts instead of waiting for its report. ' +
+            'Collect it with subagent_result, which also works in a later turn. Chains always ' +
+            'run in the foreground.'
         },
         timeout_seconds: {
           type: 'number',
           description: `Kill the subagent after this many seconds. Defaults to ${defaultTimeoutSeconds}.`
         }
       },
-      required: ['task']
+      required: []
+    },
+    capabilities: ['read']
+  }, {
+    name: 'subagent_result',
+    description:
+      'Collect the report of a subagent started with run_in_background, or check on one that ' +
+      'is still running. Returns the same report the subagent would have returned inline, and ' +
+      'what it is doing right now while it runs.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        id: {
+          type: 'number',
+          description: 'Id from the subagent response, e.g. 3 for "id 3".'
+        },
+        wait_seconds: {
+          type: 'number',
+          description: 'Wait this long for the run to finish before reporting. Defaults to 0, ' +
+            'which reports the current status without waiting.'
+        }
+      },
+      required: ['id']
     },
     capabilities: ['read']
   }]
 })
 
-// Runs by tool/command id, kept until the panel closes so a fan-out shows what
-// already finished. Queued ids wait for a concurrency slot, FIFO.
+// Every run, keyed by its number, so a background report can be collected long
+// after the run left the panel. Queued runs wait for a concurrency slot, FIFO.
 const runs = new Map()
+const results = new Map()
 const queue = []
+let nextNumber = 0
 // niminal redraws the panel from what it holds, so no state lives here beyond
 // the last update.
 let ticker = null
@@ -289,7 +409,7 @@ function runRow(run) {
   // A run that never started (queued, or cancelled while queued) has no elapsed time.
   const timing = run.startedAt ? ` · ${elapsed(run)}` : ''
   const state = run.phase === 'done' ? 'done' : run.phase === 'queued' ? 'pending' : 'active'
-  return { text: `${run.label} · ${run.activity}${timing}${tokens}`, state }
+  return { text: `#${run.number} ${run.label} · ${run.activity}${timing}${tokens}`, state }
 }
 
 // Subagent progress goes in a panel above the composer, never in the transcript:
@@ -371,10 +491,26 @@ function finishRun(run, result) {
   run.phase = 'done'
   run.endedAt = Date.now()
   run.child = null
+  const entry = results.get(run.number)
+  if (entry) {
+    entry.status = 'done'
+    entry.result = result
+    entry.endedAt = run.endedAt
+    // Resolves entry.done for the caller and for subagent_result.
+    entry.settle()
+  }
+  forgetOldResults()
   // A free slot may let a queued run start, so pump before redrawing.
   pump()
   refresh()
-  run.resolve(result)
+}
+
+// Finished reports stay collectable by id, so only the oldest ones fall out.
+function forgetOldResults() {
+  for (const [number, entry] of results) {
+    if (results.size <= MAX_RESULTS) return
+    if (entry.status === 'done') results.delete(number)
+  }
 }
 
 function pump() {
@@ -402,6 +538,17 @@ function startRun(run) {
     '--append-system-prompt', run.agent.prompt + REPORT_CONTRACT]
   if (run.model) {
     args.push('--model', run.model)
+  }
+  if (run.thinking) {
+    args.push('--thinking', run.thinking)
+  }
+  if (run.maxSteps) {
+    args.push('--max-steps', String(run.maxSteps))
+  }
+  if (trusted) {
+    // The session already trusts this project, so its skills and instructions
+    // load here too instead of being skipped for the lack of a prompt.
+    args.push('--approve')
   }
   args.push(run.task)
 
@@ -462,51 +609,72 @@ function startRun(run) {
     // Whatever the subagent managed to say before it stopped is still worth
     // returning, so the parent can see how far it got.
     const report = finalText ? `${finalText}\n\n---\n${usage}` : ''
-    const lastLine = stderrTail.trim().split('\n').pop() || ''
+    const notes = stderrNotes(stderrTail)
     let failure = ''
     if (run.stopReason) {
       failure = cancelReason(run)
     } else if (lastError) {
       failure = `failed: ${lastError}`
     } else if (code) {
-      failure = `exited with status ${code}${lastLine ? `: ${lastLine}` : ''}`
+      failure = `exited with status ${code}`
     } else if (code === null) {
       failure = 'was killed'
     } else if (!finalText) {
       failure = 'finished without a report'
     }
-    finishRun(run, {
-      text: failure ? `subagent ${failure}${report ? `\n\n${report}` : ''}` : report,
-      isError: Boolean(failure)
-    })
+    const text = [failure ? `subagent ${failure}` : '', report, notes]
+      .filter(Boolean).join('\n\n')
+    // "report" is the bare answer, which is what a chain step gets through
+    // "{previous}" so it does not pay for the usage footer as well.
+    finishRun(run, { text, isError: Boolean(failure), report: finalText })
   })
 }
 
-// Queue a run and start it as soon as a concurrency slot is free.
-function runSubagent({ id, task, label, agent, model, timeoutSeconds }) {
-  return new Promise((resolve) => {
-    runs.set(id, {
-      id,
-      task,
-      label,
-      agent,
-      model,
-      timeoutSeconds,
-      phase: 'queued',
-      child: null,
-      startedAt: 0,
-      endedAt: 0,
-      activity: 'queued',
-      inputTokens: 0,
-      outputTokens: 0,
-      stopReason: '',
-      settled: false,
-      resolve
-    })
-    queue.push(id)
-    refresh()
-    pump()
-  })
+// niminal and the provider write warnings to stderr, and a run that exits clean
+// still leaves them there, so they come back as a short note instead of vanishing.
+function stderrNotes(tail) {
+  const lines = tail.split('\n').map((line) => line.trim()).filter(Boolean)
+  return lines.length ? `subagent notes:\n${lines.slice(-3).map((line) => clip(line, 200)).join('\n')}` : ''
+}
+
+// Queue a run and start it as soon as a concurrency slot is free. The caller
+// awaits entry.done and reads entry.result, which also works long after the run
+// left the panel, so a background report can be collected in a later turn.
+function runSubagent({ callId, index, task, label, agent, model, thinking, maxSteps,
+  timeoutSeconds }) {
+  const number = ++nextNumber
+  // One call can carry several runs, and the panel action ids have to tell them
+  // apart while host cancellation still names the call.
+  const id = `${callId}:${index}`
+  const entry = { number, label, status: 'running', result: null, endedAt: 0 }
+  entry.done = new Promise((resolve) => { entry.settle = resolve })
+  const run = {
+    id,
+    callId,
+    number,
+    task,
+    label,
+    agent,
+    model,
+    thinking,
+    maxSteps,
+    timeoutSeconds,
+    phase: 'queued',
+    child: null,
+    startedAt: 0,
+    endedAt: 0,
+    activity: 'queued',
+    inputTokens: 0,
+    outputTokens: 0,
+    stopReason: '',
+    settled: false
+  }
+  runs.set(id, run)
+  results.set(number, entry)
+  queue.push(id)
+  refresh()
+  pump()
+  return { run, entry }
 }
 
 function makeLabel(raw, task) {
@@ -515,8 +683,7 @@ function makeLabel(raw, task) {
 }
 
 function usageText() {
-  return 'Usage: /subagent [agent] <task>. Agents: ' +
-    Object.entries(AGENTS).map(([name, agent]) => `${name}: ${agent.description}`).join('; ') +
+  return 'Usage: /subagent [agent] <task>. Agents: ' + agentList() +
     `. Defaults to ${DEFAULT_AGENT}.`
 }
 
@@ -524,39 +691,223 @@ function sendError(id, text) {
   send({ type: 'response', id, is_error: true, content: [{ type: 'text', text }] })
 }
 
+function agentNames() {
+  return Object.keys(AGENTS).join(', ')
+}
+
+// A bare task, a parallel batch, or a sequential chain. Only one of the three,
+// so a mixed call fails loudly instead of dropping half the work.
+function planJobs(input) {
+  if (Array.isArray(input.chain)) {
+    if (!input.chain.length || input.chain.length > MAX_CHAIN_STEPS) {
+      return { error: `subagent "chain" needs 1 to ${MAX_CHAIN_STEPS} steps.` }
+    }
+    if (input.run_in_background) {
+      return { error: 'a subagent chain runs in the foreground because each step needs the ' +
+        'one before it. Start single tasks in the background instead.' }
+    }
+    return { items: input.chain, chain: true }
+  }
+  if (Array.isArray(input.tasks)) {
+    if (!input.tasks.length) {
+      return { error: 'subagent "tasks" needs at least one task.' }
+    }
+    return { items: input.tasks, chain: false }
+  }
+  if (String(input.task ?? '').trim()) {
+    return { items: [{ task: input.task }], chain: false }
+  }
+  return { error: 'subagent needs "task", "tasks", or "chain".' }
+}
+
+function timeoutFor(value) {
+  if (value === undefined) return defaultTimeoutSeconds
+  const seconds = Number(value)
+  return Number.isFinite(seconds) && seconds > 0 ? seconds : 0
+}
+
+// Items may be a plain task string or an object, so accept both.
+function itemObject(item) {
+  if (typeof item === 'string') return { task: item }
+  return item && typeof item === 'object' ? item : {}
+}
+
+// Turn one plan item into a run. The item wins over the call-level fields, so a
+// batch can mix agents while sharing the timeout.
+function jobFor(item, input, callId, index, timeoutSeconds) {
+  const source = itemObject(item)
+  const { agent } = agentFor(source.agent ?? input.agent)
+  if (!agent) {
+    return { error: `subagent "agent" must be one of: ${agentNames()}.` }
+  }
+  const task = String(source.task ?? '').trim()
+  if (!task) {
+    return { error: 'every subagent needs a non-empty "task".' }
+  }
+  return {
+    job: {
+      callId,
+      index,
+      task,
+      label: makeLabel(source.label ?? input.label, task),
+      agent,
+      model: agent.model || defaultModel,
+      thinking: agent.thinking || defaultThinking,
+      maxSteps: agent.maxSteps || defaultMaxSteps,
+      timeoutSeconds
+    }
+  }
+}
+
+function agentFor(raw) {
+  const name = String(raw ?? '').trim().toLowerCase() || DEFAULT_AGENT
+  return { name, agent: AGENTS[name] }
+}
+
+function backgroundText(started) {
+  const parts = started.map(({ entry }) =>
+    `id ${entry.number} (${entry.label}) is running in the background`)
+  return `${parts.join('; ')}.\n\nKeep working, then call subagent_result with that id to ` +
+    'collect the report. Results stay available for the rest of the session.'
+}
+
+async function collect(started) {
+  return Promise.all(started.map(async ({ entry }) => {
+    await entry.done
+    return { label: entry.label, result: entry.result }
+  }))
+}
+
+// Each step waits for the one before it, so a step can build on the report it
+// gets through "{previous}".
+async function runChain(items, input, callId, timeoutSeconds) {
+  const parts = []
+  let previous = ''
+  for (const [index, item] of items.entries()) {
+    const task = String(itemObject(item).task ?? '').replaceAll('{previous}', previous)
+    const made = jobFor({ ...itemObject(item), task }, input, callId, index, timeoutSeconds)
+    if (made.error) {
+      parts.push({ label: `step ${index + 1}`, result: { text: made.error, isError: true } })
+      break
+    }
+    const { entry } = runSubagent(made.job)
+    await entry.done
+    previous = entry.result.report || entry.result.text
+    parts.push({ label: made.job.label, result: entry.result })
+    if (entry.result.isError) break
+  }
+  return parts
+}
+
+function joinedReports(parts) {
+  const failed = parts.filter((part) => part.result.isError).length
+  const heading = parts.length > 1
+    ? `${parts.length} subagents finished${failed ? `, ${failed} failed` : ''}.\n\n`
+    : ''
+  const body = parts.map((part, index) => {
+    const title = parts.length > 1
+      ? `## ${index + 1}. ${part.label}${part.result.isError ? ' (failed)' : ''}\n`
+      : ''
+    return `${title}${part.result.text}`
+  }).join('\n\n')
+  return heading + body
+}
+
 async function handleTool(message) {
   const input = message.arguments || {}
-  const task = String(input.task ?? '').trim()
-  if (!task) {
-    sendError(message.id, 'subagent requires a non-empty "task".')
-    return
-  }
-  const name = String(input.agent ?? '').trim().toLowerCase() || DEFAULT_AGENT
-  const agent = AGENTS[name]
-  if (!agent) {
-    sendError(message.id, `subagent "agent" must be one of: ${Object.keys(AGENTS).join(', ')}.`)
-    return
-  }
-  const timeoutSeconds = input.timeout_seconds === undefined
-    ? defaultTimeoutSeconds
-    : Number(input.timeout_seconds)
-  if (!Number.isFinite(timeoutSeconds) || timeoutSeconds <= 0) {
+  const timeoutSeconds = timeoutFor(input.timeout_seconds)
+  if (!timeoutSeconds) {
     sendError(message.id, 'subagent "timeout_seconds" must be a positive number.')
     return
   }
-  const result = await runSubagent({
-    id: message.id,
-    task,
-    label: makeLabel(input.label, task),
-    agent,
-    model: agent.model || defaultModel,
-    timeoutSeconds
-  })
+  const plan = planJobs(input)
+  if (plan.error) {
+    sendError(message.id, plan.error)
+    return
+  }
+  if (plan.chain) {
+    const parts = await runChain(plan.items, input, message.id, timeoutSeconds)
+    send({
+      type: 'response',
+      id: message.id,
+      content: [{ type: 'text', text: joinedReports(parts) }],
+      is_error: parts.every((part) => part.result.isError)
+    })
+    return
+  }
+  const started = []
+  for (const [index, item] of plan.items.entries()) {
+    const made = jobFor(item, input, message.id, index, timeoutSeconds)
+    if (made.error) {
+      sendError(message.id, made.error)
+      return
+    }
+    started.push(runSubagent(made.job))
+  }
+  if (input.run_in_background) {
+    send({
+      type: 'response',
+      id: message.id,
+      content: [{ type: 'text', text: backgroundText(started) }]
+    })
+    return
+  }
+  const parts = await collect(started)
   send({
     type: 'response',
     id: message.id,
-    content: [{ type: 'text', text: result.text }],
-    is_error: result.isError
+    content: [{ type: 'text', text: joinedReports(parts) }],
+    is_error: parts.every((part) => part.result.isError)
+  })
+}
+
+const sleep = (ms) => new Promise((resolve) => {
+  const timer = setTimeout(resolve, ms)
+  timer.unref?.()
+})
+
+function runsForCall(callId) {
+  return [...runs.values()].filter((run) => run.callId === callId)
+}
+
+function liveRun(number) {
+  for (const run of runs.values()) {
+    if (run.number === number) return run
+  }
+  return null
+}
+
+// A run that is still going reports what it is doing instead of a report, so a
+// poll is informative even when the answer is "not yet".
+function pendingText(entry) {
+  const run = liveRun(entry.number)
+  const where = run?.phase === 'queued'
+    ? 'is queued behind the concurrency limit'
+    : `is running: ${run?.activity ?? 'working'}${run?.startedAt ? ` · ${elapsed(run)}` : ''}`
+  return `subagent ${entry.number} (${entry.label}) ${where}. Call subagent_result again, ` +
+    'or pass wait_seconds, to collect its report.'
+}
+
+async function handleResult(message) {
+  const input = message.arguments || {}
+  const entry = results.get(Number(input.id))
+  if (!entry) {
+    const known = [...results.keys()].map((number) => `id ${number}`).join(', ')
+    sendError(message.id,
+      `no subagent with id ${input.id}. ` +
+      (known ? `Known runs: ${known}.` : 'No subagent has run in this session yet.'))
+    return
+  }
+  const waitSeconds = Math.min(Math.max(Number(input.wait_seconds) || 0, 0), 300)
+  if (entry.status !== 'done' && waitSeconds > 0) {
+    await Promise.race([entry.done, sleep(waitSeconds * 1000)])
+  }
+  const done = entry.status === 'done'
+  send({
+    type: 'response',
+    id: message.id,
+    content: [{ type: 'text', text: done ? entry.result.text : pendingText(entry) }],
+    is_error: done && entry.result.isError
   })
 }
 
@@ -571,15 +922,20 @@ async function handleCommand(message) {
     send({ type: 'response', id: message.id, message: usageText() })
     return
   }
-  const result = await runSubagent({
-    id: `command:${message.id}`,
+  const agent = AGENTS[name]
+  const { entry } = runSubagent({
+    callId: `command:${message.id}`,
+    index: 0,
     task,
     label: makeLabel('', task),
-    agent: AGENTS[name],
-    model: AGENTS[name].model || defaultModel,
+    agent,
+    model: agent.model || defaultModel,
+    thinking: agent.thinking || defaultThinking,
+    maxSteps: agent.maxSteps || defaultMaxSteps,
     timeoutSeconds: defaultTimeoutSeconds
   })
-  send({ type: 'response', id: message.id, message: result.text })
+  await entry.done
+  send({ type: 'response', id: message.id, message: entry.result.text })
 }
 
 const input = readline.createInterface({ input: process.stdin })
@@ -593,15 +949,19 @@ input.on('line', (line) => {
     handleTool(message).catch((err) => {
       sendError(message.id, `subagent failed: ${err.message}`)
     })
+  } else if (message.type === 'tool' && message.name === 'subagent_result') {
+    handleResult(message).catch((err) => {
+      sendError(message.id, `subagent_result failed: ${err.message}`)
+    })
   } else if (message.type === 'command' && message.name === 'subagent') {
     handleCommand(message).catch((err) => {
       send({ type: 'response', id: message.id, message: `subagent failed: ${err.message}` })
     })
   } else if (message.type === 'cancel') {
     // niminal has given up on this tool call and drops the response, so stop the
-    // child instead of letting it work and bill until its timeout.
-    const run = runs.get(message.id)
-    if (run) {
+    // child instead of letting it work and bill until its timeout. One call can
+    // have started several runs, so every one of them stops.
+    for (const run of runsForCall(message.id)) {
       cancelRun(run, 'host')
     }
   } else if (message.type === 'ui_action' && message.widget === WIDGET_KEY) {
