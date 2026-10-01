@@ -25,9 +25,10 @@ lifecycle events like the start and end of a turn.
 | [pirate](./extensions/pirate/) | Add `/pirate` to make the agent answer like a pirate | [README](./extensions/pirate/README.md) |
 | [powerline_footer](./extensions/powerline_footer/) | Add `/footer_demo` to show the provider and model in the footer | [README](./extensions/powerline_footer/README.md) |
 | [session_cleanup](./extensions/session_cleanup/) | Delete session files older than 30 days when you quit | [README](./extensions/session_cleanup/README.md) |
-| [subagent](./extensions/subagent/) | Delegate work to isolated read-only subagents, from the model or `/subagent` | [README](./extensions/subagent/README.md) |
+| [subagent](./extensions/subagent/) | Delegate work to isolated subagents (read-only by default; writable agents and worktrees supported) | [README](./extensions/subagent/README.md) |
 | [todo](./extensions/todo/) | Give the agent a `todo` tool and a task list widget above the composer | [README](./extensions/todo/README.md) |
 | [mcp](./extensions/mcp/) | Bridge stdio and remote MCP servers into model tools (`server__tool` names) | [README](./extensions/mcp/README.md) |
+| [niminal-pstack](./niminal-pstack/) | Poteto Mode (Shift-Tab), pstack skills/playbooks, setup-pstack; needs enhanced [subagent](./extensions/subagent/) | [README](./niminal-pstack/README.md) |
 
 **Tools** are one-shot programs that niminal runs only when the model calls
 them. They show up as typed tools next to the built-in ones.
@@ -65,6 +66,39 @@ commands and tools are available immediately.
 
 `~/.niminal/extensions/` works everywhere. If you use the portable `~/.agents/`
 layout, those folders work too.
+
+## Install niminal-pstack
+
+niminal-pstack is a multi-part pack: an extension (Shift-Tab **Poteto** mode),
+skills, agent markdowns, and the enhanced [subagent](./extensions/subagent/)
+extension. Skills and agents are not loaded from the extension folder, so copy
+each piece:
+
+```bash
+git clone https://github.com/martineastwood/niminal-extensions.git
+cd niminal-extensions
+
+mkdir -p ~/.niminal/extensions ~/.niminal/skills ~/.niminal/subagents
+
+cp -r niminal-pstack/extension ~/.niminal/extensions/niminal-pstack
+cp -r niminal-pstack/skills/. ~/.niminal/skills/
+cp -r niminal-pstack/agents/. ~/.niminal/subagents/
+cp -r extensions/subagent ~/.niminal/extensions/subagent
+
+# optional checklist UI used by Poteto mode
+cp -r extensions/todo ~/.niminal/extensions/todo
+```
+
+If you already have an older `subagent` install, overwrite it with the copy
+above so writable agents and worktrees work.
+
+Restart niminal or run `/reload`. Then:
+
+1. Shift-Tab until the footer shows **Poteto**.
+2. Run `/setup-pstack` once (or leave roles as `inherit-parent`).
+3. Try `/skill:poteto-mode` on a real task.
+
+Full details: [niminal-pstack/README.md](./niminal-pstack/README.md).
 
 ## Install a tool
 

@@ -1,8 +1,10 @@
 # subagent
 
 Give the model, and yourself, isolated subagents. Each run starts a fresh
-headless niminal session with read-only tools, works on one task, and returns a
-report plus its token usage.
+headless niminal session, works on one task, and returns a report plus its
+token usage. Built-in agents stay read-only. Agent files can opt into write
+tools (`edit`, `write`, `git`, `bash`) via frontmatter, and optional `cwd` or
+`worktree: true` isolates writers under `.niminal/worktrees/`.
 
 Subagents see only the task you give them, never the main conversation, so a
 task must be self-contained. Every subagent is asked to finish with a report: a
@@ -23,8 +25,11 @@ collect its report when it is ready.
 Copy this directory into an extension root:
 
 ```bash
-cp -r subagent ~/.niminal/extensions/
+rm -rf ~/.niminal/extensions/subagent
+cp -r subagent ~/.niminal/extensions/subagent
 ```
+
+Use `rm -rf` first: `cp -r` into an existing directory nests a second `subagent/` folder and leaves the old extension running.
 
 Restart niminal or run `/reload` after you change the extension program itself.
 
@@ -60,10 +65,14 @@ The `subagent` tool takes:
 | Argument | Required | Meaning |
 | --- | --- | --- |
 | `task` | one of these three | Complete, self-contained instructions for one subagent |
-| `tasks` | one of these three | Parallel batch of `{ agent, task, label }` items, all started at once |
-| `chain` | one of these three | Sequential `{ agent, task, label }` steps, up to 8. In a step task, `{previous}` is replaced by the report before it |
+| `tasks` | one of these three | Parallel batch of items, all started at once |
+| `chain` | one of these three | Sequential steps, up to 8. In a step task, `{previous}` is replaced by the report before it |
 | `label` | no | Short name shown in the Subagents panel, e.g. `parser-investigation` |
 | `agent` | no | Agent for the call, such as `scout` or `reviewer`. Defaults to `general`. A batch or chain item can name its own |
+| `model` | no | Model id override (call or per item) |
+| `role` | no | Role name from `~/.niminal/pstack/models.json` (call or per item). `inherit-parent` / unset uses the session model |
+| `cwd` | no | Working directory for the child (call or per item) |
+| `worktree` | no | Create or reuse `.niminal/worktrees/<label>` and run there |
 | `run_in_background` | no | Return as soon as the run starts, with an id, instead of waiting for the report. Not available with `chain` |
 | `timeout_seconds` | no | Kill each run after this many seconds. Defaults to 1800 |
 
@@ -89,6 +98,22 @@ started in one turn can be collected in the next. Changing sessions does not
 clear them: niminal keeps extensions running, so an id still resolves after
 `/new` or `/resume`.
 
+### Parallel batches
+
+Use **one** `subagent` call with a `tasks` array so every item starts together.
+Several separate `subagent` calls in the same turn run one after another.
+
+### Token usage in the footer
+
+The main session footer counts **parent** tokens only. Each subagent is a
+separate headless niminal process, so its usage is not added to session totals.
+
+This extension keeps a cumulative subagent total for the **current parent
+session** and shows it in the footer status line (for example
+`subagents ↑1.2M ↓80k`) after runs finish. `/new` and `/resume` clear it.
+Per-run usage still appears at the bottom of each tool result. While runs are
+active, the Subagents panel shows progress.
+
 ## Agents
 
 | Agent | Tools | Use it for |
@@ -99,7 +124,31 @@ clear them: niminal keeps extensions running, so an id still resolves after
 | `reviewer` | `read`, `grep`, `glob`, `ls` | Code review: bugs, tests, edge cases, simplicity |
 | `oracle` | `read`, `grep`, `glob`, `ls` | Second opinion before acting; challenge assumptions |
 
-All built-in agents are read-only. No agent can start further subagents.
+All built-in agents are read-only. Agent files may list write tools. No agent
+can start further subagents (`subagent` / `subagent_result` are blocked).
+
+### Writable agents and worktrees
+
+Omit `tools` for the default read-only set (`read,grep,glob,ls,skill`). To allow
+edits, set frontmatter such as:
+
+```markdown
+---
+description: Implements a scoped change in an isolated worktree
+tools: read,grep,glob,ls,edit,write,git,bash,skill
+---
+```
+
+JSON-mode children have no approval UI, so a write-capable agent is effectively
+YOLO inside its allowlist. Prefer `worktree: true` (or a distinct `cwd`) for
+writers, especially when running several in parallel. The extension warns when
+multiple write-capable jobs share one tree. Worktrees are not deleted
+automatically; prune them with `git worktree remove` or the pstack
+worktree-cleanup playbook.
+
+```text
+run poteto-agent on this bugfix with worktree true
+```
 
 The registered tool description lists agents known at extension load time. Agent
 files on disk are rediscovered on every `subagent` call, so new or edited agents
@@ -126,7 +175,7 @@ concrete bugs, missing tests, and anything you could not verify.
 | Field | Required | Meaning |
 | --- | --- | --- |
 | `description` | no | Shown to the model next to the agent's tools, which is how it picks an agent. Defaults to the prompt's first line |
-| `tools` | no | Comma-separated read-only tools. Defaults to all of them |
+| `tools` | no | Comma-separated tools. Defaults to read-only (`read,grep,glob,ls,skill`). May include `edit,write,git,bash`. Nested `subagent` tools are dropped |
 | `model` | no | Model for this agent. Used after `models.<name>.<provider>` in `subagents.json` |
 | `thinking` | no | Reasoning level for this agent: `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, or `max`. Defaults to `thinking` in `subagents.json`, then your session level |
 | `max_steps` | no | Tool-loop cap for this agent, e.g. `40`. Defaults to `max_steps` in `subagents.json`, then your niminal config |
@@ -141,9 +190,9 @@ Project agent files load only in a trusted workspace, so a repository you have
 not approved cannot change how subagents behave. Trust one with `--approve` or
 `/trust on`, and the extension warns on stderr when it skips those files.
 
-Agent files are read only. A `tools` value that names anything outside `read`,
-`grep`, `glob`, `ls`, and `skill` is dropped, and the extension warns on stderr.
-If every tool is dropped, the agent falls back to all read-only tools.
+Agent files may list write tools. A `tools` value that names `subagent` or
+`subagent_result` is dropped, and the extension warns on stderr. If every tool
+is dropped, the agent falls back to the read-only default.
 
 ## Run a subagent yourself
 
@@ -248,8 +297,8 @@ For orchestration policy, add a short section to your `AGENTS.md`:
 
 ```markdown
 ## Subagents
-The `subagent` tool runs isolated, read-only agents that cannot see this
-conversation, so tasks must be self-contained.
+The `subagent` tool runs isolated agents that cannot see this conversation,
+so tasks must be self-contained. Prefer worktrees for write-capable agents.
 
 - Use `scout` for recon, `planner` for plans, `reviewer` for review, `oracle`
   before risky decisions, `general` when skills matter.
@@ -279,7 +328,8 @@ override file values.
 
 ## Limitations
 
-- Subagents are read-only. They cannot edit files or run shell commands.
+- Built-in agents are read-only. Writable agents opt in via frontmatter and run
+  without approval prompts in JSON mode.
 - A `chain` runs in the foreground. You can watch and stop a run, not steer it.
 - Each run uses `--no-session`, so subagent transcripts are not resumable.
 - The panel is live state only; reports stay collectable by id until the newest

@@ -31,9 +31,10 @@ Ask for multi-step work and mention the list:
 implement the settings screen and track the work in todos
 ```
 
-The agent creates the steps up front with `create` and a `subjects` list, marks
-one `in_progress` as it starts it, and marks it `completed` when the work and
-its checks are done. The widget updates as it goes.
+The agent creates the steps up front with `create` and a `subjects` list (the
+first task starts `in_progress`), marks each task `completed` when that step's
+work is done, then marks the next `in_progress`. The widget only changes when
+the `todo` tool runs, so skipped updates leave a stale list.
 
 Review the list yourself at any time:
 

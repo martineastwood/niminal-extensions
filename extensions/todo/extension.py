@@ -14,10 +14,12 @@ TOOL = {
     "name": "todo",
     "description": (
         "Track multi-step work in a persistent todo list. Use this for tasks with several steps "
-        "or when the user asks to track work. Create the tasks up front with subjects, mark the "
-        "current task in_progress when you start it, and mark each task completed only after its "
-        "work and checks are done. Every result lists the open tasks. State is saved for this "
-        "workspace and session."
+        "or when the user asks to track work. Create the plan up front with subjects. "
+        "Before you start a step, update that task to in_progress. As soon as that step's work "
+        "is done, update it to completed, then mark the next task in_progress. "
+        "Do not leave the list stale while you work, and do not wait until the end to flip "
+        "every status. Every result lists the open tasks. State is saved for this workspace "
+        "and session."
     ),
     "input_schema": {
         "type": "object",
@@ -25,7 +27,7 @@ TOOL = {
             "action": {"type": "string", "enum": ["create", "update", "list", "get", "delete", "clear"]},
             "subject": {"type": "string", "description": "Short, imperative task name."},
             "subjects": {"type": "array", "items": {"type": "string"},
-                         "description": "Create several tasks in one call, in order. Use instead of subject for a new plan."},
+                         "description": "Create several tasks in one call, in order. Use instead of subject for a new plan. The first task starts in_progress."},
             "description": {"type": "string", "description": "Optional task detail."},
             "activeForm": {"type": "string", "description": "Present-continuous label shown while in progress."},
             "id": {"type": "integer", "minimum": 1},
@@ -100,9 +102,14 @@ def summary_text(state):
     tasks = open_tasks(state)
     if not tasks:
         return "No open tasks."
-    return "Open tasks: " + "; ".join(
+    current = next((task for task in tasks if task["status"] == "in_progress"), None)
+    open_line = "Open tasks: " + "; ".join(
         f"#{task['id']} {task['subject']} ({task['status'].replace('_', ' ')})"
         for task in tasks)
+    if current is None:
+        return open_line + "\nUpdate the next task to in_progress before continuing."
+    return (open_line +
+            f"\nCurrent: #{current['id']}. Mark it completed when done, then advance the next.")
 
 
 def make_widget(state):
@@ -189,7 +196,9 @@ def create_tasks(state, params):
         created.append({"id": state["next_id"], "subject": subject.strip(), "status": "pending"})
         state["tasks"].append(created[-1])
         state["next_id"] += 1
-    return "Created " + ", ".join(f"#{task['id']} {task['subject']}" for task in created)
+    created[0]["status"] = "in_progress"
+    return ("Created " + ", ".join(f"#{task['id']} {task['subject']}" for task in created) +
+            f". #{created[0]['id']} is in_progress; update each task as you finish it.")
 
 
 def apply_action(state, params):

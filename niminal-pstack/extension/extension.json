@@ -1,0 +1,5 @@
+{
+  "name": "niminal-pstack",
+  "command": ["./extension.mjs"],
+  "response_timeout_seconds": null
+}

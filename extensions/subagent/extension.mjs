@@ -1,31 +1,42 @@
 #!/usr/bin/env node
 // subagent: expose niminal subagents as model tools and a slash command.
 //
-// Each run starts "niminal --mode json --no-session" in a fresh read-only
-// session and returns the subagent's final report with its token usage. Agents
-// are built-in scout, general, planner, reviewer, and oracle, plus any *.md files
-// under a subagents/
-// folder in the global or project .niminal and .agents roots. Project agents
-// need a trusted workspace. One call carries a task, a parallel batch, or a
-// sequential chain, and a run can go to the background and be collected later
-// with subagent_result. Runs show in a Subagents panel above the composer, and
-// calls beyond the concurrency limit wait for a slot instead of failing.
-import { spawn } from 'node:child_process'
-import { existsSync, readFileSync, readdirSync, writeFileSync } from 'node:fs'
+// Each run starts "niminal --mode json --no-session" in a fresh session and
+// returns the subagent's final report with its token usage. Agents are built-in
+// scout, general, planner, reviewer, and oracle (read-only by default), plus
+// any *.md files under a subagents/ folder in the global or project .niminal
+// and .agents roots. Agent frontmatter `tools:` is authoritative: omit it for
+// the read-only default, or list write tools (edit, write, git, bash) for
+// workers. Project agents need a trusted workspace. One call carries a task, a
+// parallel batch, or a sequential chain. Optional cwd / worktree isolate
+// writers. A run can go to the background and be collected later with
+// subagent_result. Runs show in a Subagents panel above the composer, and calls
+// beyond the concurrency limit wait for a slot instead of failing.
+import { spawn, execFileSync } from 'node:child_process'
+import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync, writeSync } from 'node:fs'
 import { homedir, tmpdir } from 'node:os'
-import { basename, extname, join } from 'node:path'
+import { basename, extname, isAbsolute, join, resolve } from 'node:path'
 import { randomBytes } from 'node:crypto'
 import readline from 'node:readline'
 
-const send = (message) => process.stdout.write(JSON.stringify(message) + '\n')
+const send = (message) => {
+  writeSync(1, JSON.stringify(message) + '\n')
+}
 
 let workspace = process.cwd()
 
-// Subagents are read-only: the tool allowlist is the whole safety boundary, and
-// a headless subagent has no permission prompt. Agent files may only name these
-// built-ins; anything else is dropped with a warning.
-const READ_ONLY_TOOLS = ['read', 'grep', 'glob', 'ls', 'skill']
-const READ_ONLY_LIST = READ_ONLY_TOOLS.join(',')
+// Parent session footer usage is parent-only; roll up child tokens here for the extension status line.
+// Cleared on session_start (/new, /resume) because the extension process outlives sessions.
+const SUBAGENT_STATUS_KEY = 'subagents'
+let cumulativeSubagentInput = 0
+let cumulativeSubagentOutput = 0
+
+// Default when an agent omits tools:. Built-ins stay on this list. Write tools
+// are opt-in via frontmatter; nested subagent tools are never allowed.
+const DEFAULT_TOOLS = ['read', 'grep', 'glob', 'ls', 'skill']
+const DEFAULT_TOOLS_LIST = DEFAULT_TOOLS.join(',')
+const WRITE_TOOLS = new Set(['edit', 'write', 'git', 'bash'])
+const BLOCKED_TOOLS = new Set(['subagent', 'subagent_result'])
 
 // niminal accepts these levels for --thinking, so an agent file that names
 // anything else is dropped rather than sent on to fail the run.
@@ -36,6 +47,7 @@ const MAX_CHAIN_STEPS = 8
 const MAX_RESULTS = 32
 const MAX_OUTPUT_LINES = 2000
 const MAX_OUTPUT_BYTES = 50 * 1024
+const PSTACK_MODELS_PATH = join(homedir(), '.niminal', 'pstack', 'models.json')
 
 const BUILTIN_AGENTS = {
   scout: {
@@ -92,11 +104,41 @@ const DEFAULT_CONFIG = {
   max_steps: 0
 }
 
-// Without this, a subagent that finishes with "done" reports nothing useful.
-const REPORT_CONTRACT =
-  ' Finish with a report for the parent agent: a short summary, then your findings with ' +
-  'file paths and line numbers, then anything you could not determine. You cannot change ' +
-  'files, so never describe edits you did not make.'
+function reportContract(toolsCsv) {
+  const tools = String(toolsCsv || '').split(',').map((tool) => tool.trim()).filter(Boolean)
+  const writable = tools.some((tool) => WRITE_TOOLS.has(tool))
+  if (writable) {
+    return ' Finish with a report for the parent agent: a short summary, then your findings ' +
+      'with file paths and line numbers, then anything you could not determine. Describe only ' +
+      'edits and commands you actually ran. You cannot start further subagents.'
+  }
+  return ' Finish with a report for the parent agent: a short summary, then your findings with ' +
+    'file paths and line numbers, then anything you could not determine. You cannot change ' +
+    'files, so never describe edits you did not make. You cannot start further subagents.'
+}
+
+function toolsAreWritable(toolsCsv) {
+  return String(toolsCsv || '').split(',').map((tool) => tool.trim())
+    .some((tool) => WRITE_TOOLS.has(tool))
+}
+
+function parseToolsList(raw) {
+  const requested = String(raw || DEFAULT_TOOLS_LIST)
+    .split(',').map((tool) => tool.trim()).filter(Boolean)
+  const tools = []
+  const dropped = []
+  for (const tool of requested) {
+    if (!/^[a-z][a-z0-9_]*$/.test(tool) || BLOCKED_TOOLS.has(tool)) {
+      dropped.push(tool)
+      continue
+    }
+    tools.push(tool)
+  }
+  return {
+    tools: tools.length ? tools.join(',') : DEFAULT_TOOLS_LIST,
+    dropped
+  }
+}
 
 function readJson(file) {
   try {
@@ -146,13 +188,10 @@ function agentFromFile(file) {
     process.stderr.write(`subagent: skipping ${file}: need a valid name and a prompt body\n`)
     return null
   }
-  const requested = (fields.tools || READ_ONLY_LIST)
-    .split(',').map((tool) => tool.trim()).filter(Boolean)
-  const tools = requested.filter((tool) => READ_ONLY_TOOLS.includes(tool))
-  const dropped = requested.filter((tool) => !READ_ONLY_TOOLS.includes(tool))
+  const { tools, dropped } = parseToolsList(fields.tools || DEFAULT_TOOLS_LIST)
   if (dropped.length) {
     process.stderr.write(
-      `subagent: agent "${name}" ignores non-read-only tools: ${dropped.join(', ')}\n`)
+      `subagent: agent "${name}" ignores invalid or nested-subagent tools: ${dropped.join(', ')}\n`)
   }
   const thinking = thinkingLevel(fields.thinking)
   if (fields.thinking && !thinking) {
@@ -170,12 +209,77 @@ function agentFromFile(file) {
     // The model picks an agent by its description, so an agent file without one
     // falls back to the prompt's first line rather than hiding its purpose.
     description: fields.description || body.split('\n')[0].trim().replace(/\.$/, '').slice(0, 120),
-    tools: tools.length ? tools.join(',') : READ_ONLY_LIST,
+    tools,
     model: fields.model || '',
     thinking,
     maxSteps,
     prompt: body
   }
+}
+
+function resolveRoleModel(role, index = 0) {
+  const name = String(role ?? '').trim()
+  if (!name) return ''
+  const config = readJson(PSTACK_MODELS_PATH)
+  const value = config?.roles?.[name]
+  if (value === undefined || value === null) return ''
+  const list = Array.isArray(value) ? value : [value]
+  if (!list.length) return ''
+  const pick = String(list[index % list.length] ?? '').trim()
+  if (!pick || pick === 'inherit-parent' || pick === 'auto') return ''
+  return pick
+}
+
+function slugify(value) {
+  const slug = String(value || 'worker')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 48)
+  return slug || `worker-${randomBytes(3).toString('hex')}`
+}
+
+function ensureWorktree(label) {
+  const slug = slugify(label)
+  const root = join(workspace, '.niminal', 'worktrees')
+  mkdirSync(root, { recursive: true })
+  const path = join(root, slug)
+  if (existsSync(path)) {
+    return path
+  }
+  try {
+    execFileSync('git', ['rev-parse', '--is-inside-work-tree'], {
+      cwd: workspace,
+      stdio: ['ignore', 'pipe', 'pipe']
+    })
+  } catch {
+    throw new Error(`worktree requires a git repository at ${workspace}`)
+  }
+  const branch = `niminal-wt/${slug}`
+  try {
+    execFileSync('git', ['worktree', 'add', '-B', branch, path, 'HEAD'], {
+      cwd: workspace,
+      stdio: ['ignore', 'pipe', 'pipe']
+    })
+  } catch (err) {
+    const detail = String(err.stderr || err.message || err).trim()
+    throw new Error(`git worktree add failed for ${path}: ${detail}`)
+  }
+  return path
+}
+
+function resolveRunCwd({ cwd, worktree, label }) {
+  if (cwd) {
+    const resolved = isAbsolute(cwd) ? cwd : resolve(workspace, cwd)
+    if (!existsSync(resolved)) {
+      throw new Error(`subagent cwd does not exist: ${resolved}`)
+    }
+    return resolved
+  }
+  if (worktree) {
+    return ensureWorktree(label)
+  }
+  return workspace
 }
 
 // Global files first, then project files, and the portable .agents layout
@@ -393,23 +497,26 @@ send({
   type: 'register',
   commands: [{
     name: 'subagent',
-    description: 'Run a read-only subagent on a task and print its report'
+    description: 'Run a subagent on a task and print its report'
   }],
   tools: [{
     name: 'subagent',
     description:
-      'Run isolated read-only subagents in their own niminal sessions and return their final ' +
-      'reports. A subagent cannot see this conversation, so every task must be complete and ' +
+      'Run isolated subagents in their own niminal sessions and return their final reports. ' +
+      'A subagent cannot see this conversation, so every task must be complete and ' +
       'self-contained, including file paths and what to report. One call carries a single ' +
       '"task", a parallel "tasks" batch, or a sequential "chain" where "{previous}" stands for ' +
-      'the prior step\'s report. Subagents can read files but cannot edit them or run commands, ' +
-      'and they cannot start further subagents, so delegate investigation, not changes. Use ' +
-      'them for broad investigation, parallel research, and double-checking; do trivial lookups ' +
-      `yourself. Calls made in the same step run in parallel, up to ${registeredMaxConcurrent} at a time, ` +
-      'and further calls wait for a slot. Set run_in_background to start work and carry on: the ' +
-      'response carries an id, and subagent_result collects the report when it is ready. ' +
-      `Known agents at register time: ${registeredAgentGuide}. Custom agents from disk work ` +
-      'immediately; run /reload to refresh this list in the tool description.',
+      'the prior step\'s report. Agent frontmatter tools: control the child allowlist: omit for ' +
+      'read-only defaults, or include edit/write/git/bash for writers. Optional cwd or ' +
+      'worktree:true isolates a writer under .niminal/worktrees/<slug>. Optional role resolves ' +
+      'a model from ~/.niminal/pstack/models.json (inherit-parent keeps the session model). ' +
+      'Children cannot start further subagents. Use them for investigation, parallel research, ' +
+      'and delegated implementation in a worktree; do trivial lookups yourself. Calls made in ' +
+      `the same step run in parallel, up to ${registeredMaxConcurrent} at a time, and further ` +
+      'calls wait for a slot. Set run_in_background to start work and carry on: the response ' +
+      'carries an id, and subagent_result collects the report when it is ready. Known agents at ' +
+      `register time: ${registeredAgentGuide}. Custom agents from disk work immediately; run ` +
+      '/reload to refresh this list in the tool description.',
     input_schema: {
       type: 'object',
       properties: {
@@ -428,7 +535,17 @@ send({
                 type: 'string',
                 description: `Agent name. Defaults to ${registeredDefaultAgent}.`
               },
-              label: { type: 'string', description: 'Short name shown in the panel.' }
+              label: { type: 'string', description: 'Short name shown in the panel.' },
+              model: { type: 'string', description: 'Model id override for this item.' },
+              role: {
+                type: 'string',
+                description: 'pstack role name from ~/.niminal/pstack/models.json.'
+              },
+              cwd: { type: 'string', description: 'Working directory for this child.' },
+              worktree: {
+                type: 'boolean',
+                description: 'Create or reuse .niminal/worktrees/<label> and run there.'
+              }
             },
             required: ['task']
           }
@@ -445,7 +562,17 @@ send({
                 type: 'string',
                 description: `Agent name. Defaults to ${registeredDefaultAgent}.`
               },
-              label: { type: 'string', description: 'Short name shown in the panel.' }
+              label: { type: 'string', description: 'Short name shown in the panel.' },
+              model: { type: 'string', description: 'Model id override for this step.' },
+              role: {
+                type: 'string',
+                description: 'pstack role name from ~/.niminal/pstack/models.json.'
+              },
+              cwd: { type: 'string', description: 'Working directory for this child.' },
+              worktree: {
+                type: 'boolean',
+                description: 'Create or reuse .niminal/worktrees/<label> and run there.'
+              }
             },
             required: ['task']
           }
@@ -457,7 +584,24 @@ send({
         agent: {
           type: 'string',
           description: registeredAgentGuide +
-            `. All agents are read-only. Defaults to ${registeredDefaultAgent}.`
+            `. Defaults to ${registeredDefaultAgent}.`
+        },
+        model: {
+          type: 'string',
+          description: 'Model id override for every job in this call unless an item sets its own.'
+        },
+        role: {
+          type: 'string',
+          description: 'pstack role from ~/.niminal/pstack/models.json for model selection.'
+        },
+        cwd: {
+          type: 'string',
+          description: 'Working directory for every job unless an item sets its own.'
+        },
+        worktree: {
+          type: 'boolean',
+          description: 'Create or reuse a git worktree under .niminal/worktrees for each job ' +
+            'that does not set cwd.'
         },
         run_in_background: {
           type: 'boolean',
@@ -472,7 +616,7 @@ send({
       },
       required: []
     },
-    capabilities: ['read']
+    capabilities: ['read', 'write', 'shell']
   }, {
     name: 'subagent_result',
     description:
@@ -559,7 +703,48 @@ function stopAll() {
 }
 
 function formatTokens(n) {
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`
   return n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(n)
+}
+
+function clearSubagentUsageStatus() {
+  cumulativeSubagentInput = 0
+  cumulativeSubagentOutput = 0
+  send({
+    type: 'update',
+    status: { key: SUBAGENT_STATUS_KEY, segments: [] }
+  })
+}
+
+function subagentStatusPayload() {
+  if (cumulativeSubagentInput === 0 && cumulativeSubagentOutput === 0) return null
+  return {
+    key: SUBAGENT_STATUS_KEY,
+    segments: [{
+      text: `subagents ↑${formatTokens(cumulativeSubagentInput)} ↓${formatTokens(cumulativeSubagentOutput)}`,
+      style: 'muted'
+    }]
+  }
+}
+
+function pushSubagentUsageStatus() {
+  const status = subagentStatusPayload()
+  if (!status) return
+  send({ type: 'update', status })
+}
+
+function recordSubagentUsage(run) {
+  const inp = run.inputTokens || 0
+  const out = run.outputTokens || 0
+  if (inp === 0 && out === 0) return
+  cumulativeSubagentInput += inp
+  cumulativeSubagentOutput += out
+  pushSubagentUsageStatus()
+}
+
+function withSubagentStatus(response) {
+  const status = subagentStatusPayload()
+  return status ? { ...response, status } : response
 }
 
 function formatDuration(seconds) {
@@ -670,6 +855,7 @@ function finishRun(run, result) {
   run.phase = 'done'
   run.endedAt = Date.now()
   run.child = null
+  recordSubagentUsage(run)
   const entry = results.get(run.number)
   if (entry) {
     entry.status = 'done'
@@ -714,8 +900,25 @@ function startRun(run) {
   run.activity = 'starting'
   refresh()
 
+  let cwd
+  try {
+    cwd = resolveRunCwd({
+      cwd: run.cwd,
+      worktree: run.worktree,
+      label: run.worktreeName || run.label
+    })
+  } catch (err) {
+    finishRun(run, { text: `subagent could not prepare cwd: ${err.message}`, isError: true })
+    return
+  }
+  run.resolvedCwd = cwd
+  if (cwd !== workspace) {
+    run.activity = `starting in ${cwd}`
+    refresh()
+  }
+
   const args = ['--mode', 'json', '--no-session', '--tools', run.agent.tools,
-    '--append-system-prompt', run.agent.prompt + REPORT_CONTRACT]
+    '--append-system-prompt', run.agent.prompt + reportContract(run.agent.tools)]
   if (sessionProvider()) {
     args.push('--provider', sessionProvider())
   }
@@ -739,7 +942,7 @@ function startRun(run) {
     // Not detached: the subagent shares this extension's process group, so a
     // niminal that gives up on this extension still kills the subagent.
     child = spawn(resolveNiminalBin(), args,
-      { cwd: workspace, stdio: ['pipe', 'pipe', 'pipe'] })
+      { cwd, stdio: ['pipe', 'pipe', 'pipe'] })
   } catch (err) {
     finishRun(run, { text: `subagent could not start niminal: ${err.message}`, isError: true })
     return
@@ -805,7 +1008,11 @@ function startRun(run) {
     } else if (!finalText) {
       failure = 'finished without a report'
     }
-    const text = [failure ? `subagent ${failure}` : '', report, notes]
+    const text = [failure ? `subagent ${failure}` : '',
+      run.resolvedCwd && run.resolvedCwd !== workspace
+        ? `subagent cwd: ${run.resolvedCwd}`
+        : '',
+      report, notes]
       .filter(Boolean).join('\n\n')
     // "report" is the bare answer, which is what a chain step gets through
     // "{previous}" so it does not pay for the usage footer as well.
@@ -824,7 +1031,7 @@ function stderrNotes(tail) {
 // awaits entry.done and reads entry.result, which also works long after the run
 // left the panel, so a background report can be collected in a later turn.
 function runSubagent({ callId, index, task, label, agent, model, thinking, maxSteps,
-  timeoutSeconds }) {
+  timeoutSeconds, cwd, worktree, worktreeName }) {
   const number = ++nextNumber
   // One call can carry several runs, and the panel action ids have to tell them
   // apart while host cancellation still names the call.
@@ -842,6 +1049,10 @@ function runSubagent({ callId, index, task, label, agent, model, thinking, maxSt
     thinking,
     maxSteps,
     timeoutSeconds,
+    cwd: cwd || '',
+    worktree: Boolean(worktree),
+    worktreeName: worktreeName || label,
+    resolvedCwd: '',
     phase: 'queued',
     child: null,
     startedAt: 0,
@@ -927,19 +1138,46 @@ function jobFor(item, input, callId, index, timeoutSeconds) {
   if (!task) {
     return { error: 'every subagent needs a non-empty "task".' }
   }
+  const label = makeLabel(source.label ?? input.label, task)
+  const role = source.role ?? input.role
+  const model = String(source.model ?? input.model ?? '').trim() ||
+    resolveRoleModel(role, index) ||
+    resolveModel(name, agent)
+  const cwd = String(source.cwd ?? input.cwd ?? '').trim()
+  const worktree = Boolean(source.worktree ?? input.worktree)
   return {
     job: {
       callId,
       index,
       task,
-      label: makeLabel(source.label ?? input.label, task),
+      label,
       agent,
-      model: resolveModel(name, agent),
+      model,
       thinking: agent.thinking || runtime.defaultThinking,
       maxSteps: agent.maxSteps || runtime.defaultMaxSteps,
-      timeoutSeconds
+      timeoutSeconds,
+      cwd,
+      worktree,
+      worktreeName: label
     }
   }
+}
+
+function sharedWritableCwdWarning(jobs) {
+  const writers = jobs.filter((job) => toolsAreWritable(job.agent.tools))
+  if (writers.length < 2) return ''
+  const keys = writers.map((job) => {
+    if (job.cwd) return `cwd:${resolve(isAbsolute(job.cwd) ? job.cwd : join(workspace, job.cwd))}`
+    if (job.worktree) return `worktree:${slugify(job.worktreeName || job.label)}`
+    return `workspace:${workspace}`
+  })
+  const counts = new Map()
+  for (const key of keys) counts.set(key, (counts.get(key) || 0) + 1)
+  const collisions = [...counts.entries()].filter(([, count]) => count > 1).map(([key]) => key)
+  if (!collisions.length) return ''
+  return 'warning: multiple write-capable subagents share a working tree (' +
+    `${collisions.join(', ')}). Prefer distinct worktree:true or cwd values so writers ` +
+    'do not collide.\n\n'
 }
 
 function agentFor(raw) {
@@ -1011,12 +1249,12 @@ async function handleTool(message) {
   }
   if (plan.chain) {
     const parts = await runChain(plan.items, input, message.id, timeoutSeconds)
-    send({
+    send(withSubagentStatus({
       type: 'response',
       id: message.id,
       content: [{ type: 'text', text: joinedReports(parts) }],
       is_error: parts.every((part) => part.result.isError)
-    })
+    }))
     return
   }
   const jobs = []
@@ -1033,17 +1271,17 @@ async function handleTool(message) {
     send({
       type: 'response',
       id: message.id,
-      content: [{ type: 'text', text: backgroundText(started) }]
+      content: [{ type: 'text', text: sharedWritableCwdWarning(jobs) + backgroundText(started) }]
     })
     return
   }
   const parts = await collect(started)
-  send({
+  send(withSubagentStatus({
     type: 'response',
     id: message.id,
-    content: [{ type: 'text', text: joinedReports(parts) }],
+    content: [{ type: 'text', text: sharedWritableCwdWarning(jobs) + joinedReports(parts) }],
     is_error: parts.every((part) => part.result.isError)
-  })
+  }))
 }
 
 const sleep = (ms) => new Promise((resolve) => {
@@ -1089,12 +1327,13 @@ async function handleResult(message) {
     await Promise.race([entry.done, sleep(waitSeconds * 1000)])
   }
   const done = entry.status === 'done'
-  send({
+  const response = {
     type: 'response',
     id: message.id,
     content: [{ type: 'text', text: done ? parentFacingText(entry.result.text) : pendingText(entry) }],
     is_error: done && entry.result.isError
-  })
+  }
+  send(done ? withSubagentStatus(response) : response)
 }
 
 // /subagent [agent] <task> runs one subagent and prints its report. A leading
@@ -1146,6 +1385,10 @@ input.on('line', (line) => {
       sessionThinkingLevel = String(payload.thinking)
     }
     refreshRuntime()
+    if (message.event === 'session_start') {
+      // Totals are per parent session, not per extension process lifetime.
+      clearSubagentUsageStatus()
+    }
     send({ type: 'response', id: message.id })
   } else if (message.type === 'tool' && message.name === 'subagent') {
     handleTool(message).catch((err) => {
