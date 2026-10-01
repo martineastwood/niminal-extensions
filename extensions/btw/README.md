@@ -1,25 +1,22 @@
 # btw
 
-Ask a side question without adding it to the conversation. `/btw` sends your
-question to the active model with the conversation so far as background, and
-shows the answer in a `btw` panel above the composer. You can ask while the main
-agent is working and keep using the composer while the side answer runs. The
-question, answer, and background stay out of the main thread.
+Open a separate chat about your current niminal session. Type `/btw`, ask questions
+in the modal, then close it to return to the main conversation. Your side questions
+and answers stay out of the main conversation and saved session.
 
-Use it when something in the last turn makes you curious, but you do not want it
-turned into the agent's next task: a term you have not seen, a decision you want
-a second opinion on, or a detail you want explained before you decide what to
-ask next.
+```text
+/btw
+```
 
-## Requirements
-
-- A niminal build with the `model.complete` host request and `markdown` panel
-  widgets, the same one `/handoff` uses for completion
-- Node.js on your `PATH` (standard library only)
+The modal has its own composer and scrolling transcript. Ask your first question,
+press Enter, then keep chatting there without typing `/btw` again.
 
 ## Install
 
-Copy this directory into a niminal extension root:
+You need Node.js on your `PATH` and a niminal build that supports modal extension
+widgets and `model.complete` with read-only tools.
+
+From the extensions directory, copy btw into your extension root:
 
 ```bash
 cp -r btw ~/.niminal/extensions/
@@ -27,83 +24,53 @@ cp -r btw ~/.niminal/extensions/
 
 Restart niminal or run `/reload`.
 
-## Use
+## Chat in the modal
 
-Ask a side question:
+You can open the modal with an optional first question:
 
 ```text
 /btw why does the retry helper wait before the second attempt?
 ```
 
-The panel shows your question and `Thinking…` while the answer runs. When it is
-ready, the answer appears in the panel, rendered like an assistant reply with
-its headings, lists, and code blocks. The footer also shows `btw thinking`
-during the request. Your `/btw` question and answer are not added to the
-conversation or sent on later turns.
-
-Ask again to continue the side thread. Follow-up questions see the earlier side
-answers as well as the main conversation:
-
-```text
-/btw and what happens if it never succeeds?
-```
-
-## Reading the answer
-
-The panel body scrolls, so a long answer stays readable without leaving niminal.
-
 | Input | Effect |
 | --- | --- |
-| Mouse wheel over the panel | Scroll the answer |
-| Mouse wheel outside the panel | Scroll the transcript |
-| Click the panel body | Focus it for keyboard scroll and Esc |
-| Click **Close** | Remove the panel |
-| Tab (empty composer) | Focus the panel |
-| Up, Down | Scroll one row when focused |
-| PageUp, PageDown | Scroll one page when focused |
-| Tab again | Move on to the panel's actions |
-| Escape (when focused) | Run **Close** and remove the panel |
+| Enter | Send your question when the previous answer has finished |
+| PageUp, PageDown | Scroll the side conversation |
+| Mouse wheel | Scroll the side conversation |
+| Escape or click **Close** | Discard the side chat and return to the main conversation |
 
-Typing in the composer clears panel focus, so Escape goes back to normal
-composer behavior. **Close** is available while the answer is still thinking,
-so you can abandon a side question early. You can keep typing and working in
-the composer while the panel is open.
+You can write your next question while an answer runs. Close is available at any
+time. Each opening starts a fresh side chat; closing discards its transcript and
+any unfinished answer. A model request already running may finish in the
+background, and a new answer may wait for that request to finish.
 
-## What the side question sees
+## What btw knows
 
-The model answers from the conversation, trimmed to the most recent 12 messages,
-each capped at 1500 characters, with the whole background capped at 24000
-characters. Earlier side questions in this session are included, up to the last 6.
+The side chat receives the main conversation available when you open the modal.
+That snapshot stays fixed throughout the side chat, even if the main agent keeps
+working. It includes the conversation still available in the session context;
+content removed by compaction is not restored. Images and attachments are
+represented by text markers, rather than sent to the side model.
 
-The side question can read and search the workspace with the `read`, `grep`,
-`glob`, and `ls` tools. This helps when the code needed for an answer has not
-appeared in the conversation. It cannot edit files or run shell commands. If it
-cannot find the answer in the conversation or workspace, it says what would
-need to be checked instead of guessing.
-
-Each answer can use up to eight read-only tool calls. Large text results are
-trimmed before they are sent to the model.
-
-Each side question is a normal model request on your active provider, so it
-costs the same as any other request of that size.
+Follow-up questions include earlier successful side questions and answers. The
+side model can inspect the workspace with `read`, `grep`, `glob`, and `ls`. It
+cannot edit files or run shell commands. Workspace reads see files as they are at
+the time of the lookup, rather than a snapshot of their contents.
 
 ## Limitations
 
-- `/btw` uses the conversation available when you start the question. It cannot
-  see later messages or output from the still-running turn.
-- The panel body shows 12 rows at a time and scrolls.
-- Closing the panel hides the answer, and there is no way to bring it back other
-  than asking again. Close while Thinking abandons that side question; the model
-  call may still finish in the background, but its answer is discarded.
-
-- The side thread lives in the extension process and belongs to one session.
-  `/new`, `/resume`, and `/fork` close the panel and forget the earlier side
-  questions, and so do `/reload` and a restart.
-- Answers are not saved to the session, so `/resume` does not bring them back.
+- The main agent can keep working while the modal is open. Closing the modal
+  preserves its progress and returns you to the main composer.
+- Side chats are temporary. Closing, changing sessions, reloading extensions, or
+  restarting niminal discards them.
+- Each answer is a paid request on your active model and provider, where applicable.
+- Each answer can use up to eight read-only tool calls; large tool results are trimmed.
+- The main snapshot and side history must fit your model's context window. If the
+  provider rejects a long conversation, close the modal and compact the main
+  conversation before opening a fresh side chat.
 
 ## Next steps
 
-- [Extensions and hooks](https://niminal.dev/guides/extensions-and-hooks/) for
-  the host requests and widgets this extension uses
-- [handoff](../handoff/) when you want the opposite: carry a summary of this
-  conversation into a new session as your next real task
+See [extensions and hooks](https://niminal.dev/guides/extensions-and-hooks/) to
+build an extension, or use [handoff](../handoff/) to carry a summary into a new
+main session.

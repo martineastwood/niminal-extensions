@@ -18,7 +18,7 @@ lifecycle events like the start and end of a turn.
 
 | Extension | What it does | Docs |
 | --- | --- | --- |
-| [btw](./extensions/btw/) | Add `/btw` to ask a side question without touching the main conversation | [README](./extensions/btw/README.md) |
+| [btw](./extensions/btw/) | Open a separate chat modal without touching the main conversation | [README](./extensions/btw/README.md) |
 | [handoff](./extensions/handoff/) | Carry context from a long conversation into a clean session | [README](./extensions/handoff/README.md) |
 | [herdr](./extensions/herdr/) | Report niminal's state to a [Herdr](https://herdr.dev) pane | [README](./extensions/herdr/README.md) |
 | [panel_demo](./extensions/panel_demo/) | Add `/panel_demo` to show a widget panel with action buttons | [README](./extensions/panel_demo/README.md) |
