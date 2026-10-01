@@ -548,7 +548,12 @@ function stopChild(run) {
 function stopAll() {
   // niminal sends "shutdown" and closes stdin, so both triggers race. Reusing
   // one pass keeps the kill alive instead of exiting before it finishes.
-  stopping ??= Promise.all(
+  if (stopping) return stopping
+  stopping = Promise.resolve()
+  for (const run of [...runs.values()]) {
+    if (run.phase === 'queued') cancelRun(run, 'host')
+  }
+  stopping = Promise.all(
     [...runs.values()].filter((run) => run.phase === 'active').map(stopChild))
   return stopping
 }
@@ -688,6 +693,7 @@ function forgetOldResults() {
 }
 
 function pump() {
+  if (stopping) return
   while (queue.length && activeCount() < runtime.maxConcurrent) {
     const run = runs.get(queue.shift())
     if (run && run.phase === 'queued') startRun(run)
@@ -710,6 +716,9 @@ function startRun(run) {
 
   const args = ['--mode', 'json', '--no-session', '--tools', run.agent.tools,
     '--append-system-prompt', run.agent.prompt + REPORT_CONTRACT]
+  if (sessionProvider()) {
+    args.push('--provider', sessionProvider())
+  }
   if (run.model) {
     args.push('--model', run.model)
   }
@@ -1010,15 +1019,16 @@ async function handleTool(message) {
     })
     return
   }
-  const started = []
+  const jobs = []
   for (const [index, item] of plan.items.entries()) {
     const made = jobFor(item, input, message.id, index, timeoutSeconds)
     if (made.error) {
       sendError(message.id, made.error)
       return
     }
-    started.push(runSubagent(made.job))
+    jobs.push(made.job)
   }
+  const started = jobs.map(runSubagent)
   if (input.run_in_background) {
     send({
       type: 'response',
