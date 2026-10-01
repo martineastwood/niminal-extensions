@@ -44,7 +44,7 @@ function mergeConfigs(paths) {
     try {
       const doc = JSON.parse(readFileSync(path, 'utf8'))
       const entries = doc?.mcpServers
-      if (!entries || typeof entries !== 'object') {
+      if (!entries || typeof entries !== 'object' || Array.isArray(entries)) {
         notes.push(`${path}: missing mcpServers object`)
         continue
       }
@@ -132,8 +132,13 @@ function remoteTransportMode(config) {
 }
 
 async function registerConnectedServer(name, config, client, transportLabel) {
-  const listed = await client.listTools()
-  const tools = (listed.tools ?? []).filter((tool) => tool?.name)
+  const tools = []
+  let cursor
+  do {
+    const listed = await client.listTools(cursor ? { cursor } : undefined)
+    tools.push(...listed.tools.filter((tool) => tool?.name))
+    cursor = listed.nextCursor
+  } while (cursor)
   servers.set(name, { client, capabilities: serverCapabilities(config), tools })
   serverStatus.push({
     name,
@@ -198,14 +203,16 @@ async function connectRemoteServer(name, config, source) {
 }
 
 async function connectStdioServer(name, config, source) {
-  const transport = new StdioClientTransport({
-    command: config.command,
-    args: Array.isArray(config.args) ? config.args.map(String) : [],
-    env: config.env && typeof config.env === 'object' ? config.env : undefined,
-    cwd: typeof config.cwd === 'string' ? config.cwd : undefined
-  })
   const client = new Client({ name: 'niminal-mcp', version: '1.0.0' })
   try {
+    const transport = new StdioClientTransport({
+      command: config.command,
+      args: Array.isArray(config.args) ? config.args.map(String) : [],
+      env: config.env && typeof config.env === 'object'
+        ? Object.fromEntries(Object.entries(config.env).map(([key, value]) => [key, interpolateEnv(String(value))]))
+        : undefined,
+      cwd: typeof config.cwd === 'string' ? config.cwd : undefined
+    })
     await client.connect(transport)
     await registerConnectedServer(name, config, client, 'stdio')
   } catch (error) {
@@ -224,6 +231,10 @@ async function connectStdioServer(name, config, source) {
 }
 
 async function connectServer(name, config, source) {
+  if (!config || typeof config !== 'object' || Array.isArray(config)) {
+    serverStatus.push({ name, status: 'invalid', detail: `server entry must be an object (from ${source})`, tools: 0 })
+    return
+  }
   if (config.enabled === false) {
     serverStatus.push({ name, status: 'disabled', tools: 0 })
     return
@@ -270,9 +281,20 @@ async function connectAll(workspace, trusted) {
 
 function exposeServerTools() {
   const tools = []
+  const names = new Map()
+  for (const [serverName, entry] of servers) {
+    for (const tool of entry.tools) {
+      const name = toolName(serverName, tool.name).toLowerCase()
+      names.set(name, (names.get(name) ?? 0) + 1)
+    }
+  }
+  for (const [name, count] of names) {
+    if (count > 1) serverStatus.push({ name: '(tools)', status: 'error', detail: `duplicate tool name rejected: ${name}`, tools: 0 })
+  }
   for (const [serverName, entry] of servers) {
     for (const tool of entry.tools) {
       const exposed = toolName(serverName, tool.name)
+      if (names.get(exposed.toLowerCase()) > 1) continue
       routes.set(exposed, { server: serverName, tool: tool.name })
       tools.push({
         name: exposed,
@@ -343,7 +365,7 @@ async function handleTool(message) {
   const args = message.arguments && typeof message.arguments === 'object' ? message.arguments : {}
   try {
     const result = await entry.client.callTool({ name: route.tool, arguments: args })
-    const text = flattenContent(result.content)
+    const text = flattenContent(result.content) || (result.structuredContent !== undefined ? JSON.stringify(result.structuredContent) : '')
     send({
       type: 'response',
       id: message.id,

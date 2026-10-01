@@ -73,13 +73,32 @@ Each server entry uses the same shape as other MCP clients:
 | `enabled` | Set to `false` to keep the entry without connecting |
 | `capabilities` | niminal approval hints: `read`, `write`, `shell`, `network`, `user` |
 
-In `url` and header values you can use `${env:VAR_NAME}` to read from the environment. If a referenced variable is unset, that server fails to connect and `/mcp` shows the error.
+In `url`, header values, and `env` values you can use `${env:VAR_NAME}` to read from the environment. If a referenced variable is unset, that server fails to connect and `/mcp` shows the error.
 
 If you omit `capabilities`, every tool from that server defaults to `network` and prompts in the TUI.
+
+### Local server credentials
+
+Pass credentials from your shell with `env`:
+
+```json
+{
+  "mcpServers": {
+    "my-service": {
+      "command": "my-mcp-server",
+      "env": { "API_KEY": "${env:MY_SERVICE_TOKEN}" }
+    }
+  }
+}
+```
+
+Set `MY_SERVICE_TOKEN` before starting niminal. Local servers inherit the SDK's basic environment variables, including `PATH` and your home directory. Pass API keys and other custom variables explicitly through `env`.
 
 ## Tool names
 
 Tools are exposed as `{server}__{tool}`. For example, a `read_file` tool on the `filesystem` server is `filesystem__read_file`.
+
+Names must be unique, including when compared without case. If two server/tool pairs produce the same name, both tools are excluded and `/mcp` reports the collision. Rename a server to resolve it.
 
 ## Status and failures
 
@@ -89,6 +108,7 @@ Servers connect independently. If one server fails, the others still register th
 
 ## Limitations
 
+- Tool results are text only. Images are omitted, and other content blocks are shown as JSON. When content is empty, structured results are shown as JSON.
 - tools only (no MCP resources or prompts)
 - remote auth via static headers only (no OAuth flow)
 - servers stay connected when you start a new session, so run `/reload` after you change `mcp.json`; a new session reuses the connections it already has
