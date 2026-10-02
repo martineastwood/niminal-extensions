@@ -6,9 +6,10 @@
 // scout, general, planner, reviewer, and oracle (read-only by default), plus
 // any *.md files under a subagents/ folder in the global or project .niminal
 // and .agents roots. Agent frontmatter `tools:` is authoritative: omit it for
-// the read-only default, or list write tools (edit, write, git, bash) for
-// workers. Project agents need a trusted workspace. One call carries a task, a
-// parallel batch, or a sequential chain. Optional cwd / worktree isolate
+// the read-only default, or list write tools (edit, write, bash) for workers.
+// Read-only extras such as git stay opt-in without marking a writer. Project
+// agents need a trusted workspace. One call carries a task, a parallel batch,
+// or a sequential chain. Optional cwd / worktree isolate
 // writers. A run can go to the background and be collected later with
 // subagent_result. Runs show in a Subagents panel above the composer, and calls
 // beyond the concurrency limit wait for a slot instead of failing.
@@ -31,17 +32,22 @@ const SUBAGENT_STATUS_KEY = 'subagents'
 let cumulativeSubagentInput = 0
 let cumulativeSubagentOutput = 0
 
-// Default when an agent omits tools:. Built-ins stay on this list. Write tools
-// are opt-in via frontmatter; nested subagent tools are never allowed.
-const DEFAULT_TOOLS = ['read', 'grep', 'glob', 'ls', 'skill']
+// Default when an agent omits tools:. Built-ins stay on this list. Read-only
+// extras such as git belong here; write tools are opt-in via frontmatter and
+// nested subagent tools are never allowed.
+const DEFAULT_TOOLS = ['read', 'grep', 'glob', 'ls', 'git', 'skill']
 const DEFAULT_TOOLS_LIST = DEFAULT_TOOLS.join(',')
-const WRITE_TOOLS = new Set(['edit', 'write', 'git', 'bash'])
+const WRITE_TOOLS = new Set(['edit', 'write', 'bash'])
 const BLOCKED_TOOLS = new Set(['subagent', 'subagent_result'])
 
 // niminal accepts these levels for --thinking, so an agent file that names
 // anything else is dropped rather than sent on to fail the run.
 const THINKING_LEVELS = ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max']
 const MAX_CHAIN_STEPS = 8
+// Read-only agents stop after this many tool-loop steps. Scout cost grows with the
+// square of the step count, so this is the wallet guard for a model that ignores its
+// budget, not the point where a normal run stops.
+const READ_ONLY_MAX_STEPS = 30
 // A report is kept for the life of this process, which outlives session
 // changes, so the map is capped.
 const MAX_RESULTS = 32
@@ -52,8 +58,9 @@ const PSTACK_MODELS_PATH = join(homedir(), '.niminal', 'pstack', 'models.json')
 const BUILTIN_AGENTS = {
   scout: {
     description: 'fast codebase recon for handoff: files, entry points, risks',
-    tools: 'read,grep,glob,ls',
+    tools: 'read,grep,glob,ls,git',
     model: '',
+    maxSteps: READ_ONLY_MAX_STEPS,
     prompt:
       'You are a read-only scout subagent. Explore the codebase for the task: prefer grep and ' +
       'glob over reading whole files, follow imports, then return compressed findings with ' +
@@ -61,16 +68,18 @@ const BUILTIN_AGENTS = {
   },
   general: {
     description: 'multi-step research across files and skills',
-    tools: 'read,grep,glob,ls,skill',
+    tools: 'read,grep,glob,ls,git,skill',
     model: '',
+    maxSteps: READ_ONLY_MAX_STEPS,
     prompt:
       'You are a read-only research subagent. Work through the task in steps and check every ' +
       'claim against the code before reporting.'
   },
   planner: {
     description: 'read-only implementation plan with acceptance criteria',
-    tools: 'read,grep,glob,ls',
+    tools: 'read,grep,glob,ls,git',
     model: '',
+    maxSteps: READ_ONLY_MAX_STEPS,
     prompt:
       'You are a read-only planner subagent. Read the code and constraints, then produce a ' +
       'numbered implementation plan with acceptance criteria and concrete verification steps. ' +
@@ -78,16 +87,18 @@ const BUILTIN_AGENTS = {
   },
   reviewer: {
     description: 'code review for correctness, tests, and simplicity',
-    tools: 'read,grep,glob,ls',
+    tools: 'read,grep,glob,ls,git',
     model: '',
+    maxSteps: READ_ONLY_MAX_STEPS,
     prompt:
       'You are a read-only reviewer subagent. Review the code or change described in the task ' +
       'for bugs, missing tests, edge cases, and unnecessary complexity. Cite file paths and lines.'
   },
   oracle: {
     description: 'second opinion: challenge assumptions before acting',
-    tools: 'read,grep,glob,ls',
+    tools: 'read,grep,glob,ls,git',
     model: '',
+    maxSteps: READ_ONLY_MAX_STEPS,
     prompt:
       'You are a read-only oracle subagent. Challenge assumptions, surface what the parent might ' +
       'be missing, and give a direct second opinion. Do not edit files or prescribe changes you ' +
@@ -104,7 +115,7 @@ const DEFAULT_CONFIG = {
   max_steps: 0
 }
 
-function reportContract(toolsCsv) {
+function childContract(toolsCsv) {
   const tools = String(toolsCsv || '').split(',').map((tool) => tool.trim()).filter(Boolean)
   const writable = tools.some((tool) => WRITE_TOOLS.has(tool))
   if (writable) {
@@ -112,9 +123,24 @@ function reportContract(toolsCsv) {
       'with file paths and line numbers, then anything you could not determine. Describe only ' +
       'edits and commands you actually ran. You cannot start further subagents.'
   }
-  return ' Finish with a report for the parent agent: a short summary, then your findings with ' +
-    'file paths and line numbers, then anything you could not determine. You cannot change ' +
-    'files, so never describe edits you did not make. You cannot start further subagents.'
+  return ' Work inside a budget. Answer the task with the smallest set of reads that gets ' +
+    'there: grep and glob before read, and read only files that matched or sit on the call ' +
+    'chain. Prefer a few broad searches over many narrow ones, and batch independent lookups ' +
+    'into the same turn instead of spending a turn on one narrow read. Stay inside the angle ' +
+    'the task names instead of inventorying the repository. Unless the task states a different ' +
+    'budget, spend at most 12 tool calls and keep one turn in reserve for the report. When the ' +
+    'budget runs out, stop and report what you found with the gaps named, because a named gap ' +
+    'beats another read. Finish with a report for the parent agent: a short summary, then your ' +
+    'findings with file paths and line numbers, then anything you could not determine. You ' +
+    'cannot change files, so never describe edits you did not make. You cannot start further ' +
+    'subagents.'
+}
+
+// A step cap is a ceiling, so the tighter of the agent's own cap and the configured
+// default wins. 0 means unset.
+function stepCap(agent, fallback) {
+  const caps = [agent.maxSteps, fallback].filter((value) => value > 0)
+  return caps.length ? Math.min(...caps) : 0
 }
 
 function toolsAreWritable(toolsCsv) {
@@ -918,7 +944,7 @@ function startRun(run) {
   }
 
   const args = ['--mode', 'json', '--no-session', '--tools', run.agent.tools,
-    '--append-system-prompt', run.agent.prompt + reportContract(run.agent.tools)]
+    '--append-system-prompt', run.agent.prompt + childContract(run.agent.tools)]
   if (sessionProvider()) {
     args.push('--provider', sessionProvider())
   }
@@ -1154,7 +1180,7 @@ function jobFor(item, input, callId, index, timeoutSeconds) {
       agent,
       model,
       thinking: agent.thinking || runtime.defaultThinking,
-      maxSteps: agent.maxSteps || runtime.defaultMaxSteps,
+      maxSteps: stepCap(agent, runtime.defaultMaxSteps),
       timeoutSeconds,
       cwd,
       worktree,
@@ -1357,7 +1383,7 @@ async function handleCommand(message) {
     agent,
     model: resolveModel(name, agent),
     thinking: agent.thinking || runtime.defaultThinking,
-    maxSteps: agent.maxSteps || runtime.defaultMaxSteps,
+    maxSteps: stepCap(agent, runtime.defaultMaxSteps),
     timeoutSeconds: runtime.defaultTimeoutSeconds
   })
   await entry.done

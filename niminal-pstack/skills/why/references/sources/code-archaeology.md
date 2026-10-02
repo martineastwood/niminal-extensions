@@ -15,52 +15,21 @@ The most trustworthy source, tied directly to the code, and the most complete. E
 
 ## How to search it
 
-Expand the seed commit list:
+You have six read-only `git` subcommands: `status`, `log`, `diff`, `show`, `blame`, `branch`.
 
-```bash
-# Full history of the file through renames
-git log --follow --oneline -- <file>
+- `log` with `limit`, plus optional `ref`, `path`, `search`, and `follow`. `search` is the pickaxe: commits that added or removed that exact text. `follow` crosses renames and needs a `path`. Expand the seed commit list yourself with these rather than waiting for the parent.
+- `show` with `ref <hash>`: the commit's message and full diff. Your highest-value call.
+- `blame` with `path` and optional `start` / `end`: who last touched each line, and when. Point it at the target line range to find the last-touch commits.
+- `diff` with `ref` and `path`: what changed between that ref and the working tree, scoped to one path. Useful for co-change signal when you name an adjacent file.
 
-# Pickaxe: commits that added or removed this exact text
-git log -S '<exact_string_from_code>' -- <file>
+Only `gh` needs a shell, so PR bodies, review comments, and linked issues stay parent-side: Step 2 of the skill runs those and hands you the results in the seed. When the seed lacks one and it matters, record the exact query under Additional Leads. Don't guess at what a PR said.
 
-# Or for patterns:
-git log -G '<regex>' -- <file>
+For the in-repo evidence, your `grep` and `glob` tools replace the `rg` examples:
 
-# Who wrote each line and when
-git blame -L <start>,<end> <file>
-
-# The full diff of a specific commit
-git show <hash>
-
-# Commits between two points affecting this file
-git log <old>..<new> -p -- <file>
-```
-
-For each substantive commit, pull the PR context:
-
-```bash
-# Find the PR number from the merge commit or branch
-git log -1 --format=%B <hash>
-
-# Full PR context: body, review comments, linked issues
-gh pr view <number> --json title,body,author,createdAt,mergedAt,labels,closingIssuesReferences,comments,reviews,files
-
-# The --json reviews and comments fields are where the real signal is
-```
-
-Look for out-of-band docs:
-
-```bash
-# ADRs often live in docs/adr/ or similar
-rg -l -i 'architecture.decision' --glob '*.md'
-
-# TODOs and FIXMEs near the target
-rg -n -C2 '(TODO|FIXME|HACK|XXX|NOTE)' <target_file>
-
-# Related tests. Names often encode the "why"
-rg -l '<symbol>' --glob '*test*'
-```
+- TODOs, FIXMEs, and notes near the target: `grep` for `TODO|FIXME|HACK|XXX|NOTE`, then read the surrounding lines.
+- ADRs: `glob` for `docs/adr/**` and `**/*.md`, then `grep` for `architecture decision` or the symbol.
+- Related tests: `grep` for the symbol, filtered to test paths. Test names often encode the why.
+- CHANGELOG and release notes: `grep` the target symbol across `CHANGELOG*` and `docs/`.
 
 ## What good evidence looks like here
 

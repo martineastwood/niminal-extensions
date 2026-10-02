@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { spawn } from 'node:child_process'
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import readline from 'node:readline'
@@ -34,7 +34,16 @@ setInterval(() => {}, 1000)
     await exited
     rmSync(dir, { recursive: true, force: true })
   })
-  return { send, launches, messages, exited }
+  return { send, launches, messages, exited, dir }
+}
+
+// Global agent files live under <home>/.niminal/subagents/, so a fixture HOME
+// gives each test its own agent list.
+function addAgent(dir, name, tools) {
+  const agents = join(dir, '.niminal', 'subagents')
+  mkdirSync(agents, { recursive: true })
+  writeFileSync(join(agents, `${name}.md`),
+    `---\nname: ${name}\ndescription: test agent\n${tools ? `tools: ${tools}\n` : ''}---\nDo the task.\n`)
 }
 
 async function until(predicate) {
@@ -63,6 +72,36 @@ test('rejects an invalid batch before launching any children', async t => {
   await until(() => f.messages.some(message => message.type === 'response' && message.id === 1))
   assert.equal(f.messages.find(message => message.type === 'response' && message.id === 1).is_error, true)
   assert.deepEqual(f.launches(), [])
+})
+
+// The fixture runs one child at a time and the mock never exits, so each case
+// observes the single launch it triggers. An `agent` that is not `probe` must be
+// a built-in, and no agent file is written for it.
+async function launchArgs(t, tools, task, agent = 'probe') {
+  const f = fixture(t)
+  if (agent === 'probe') addAgent(f.dir, 'probe', tools)
+  f.send({ type: 'tool', name: 'subagent', id: 1, arguments: { task, agent } })
+  await until(() => f.launches().length === 1)
+  const args = f.launches()[0]
+  return { tools: args[args.indexOf('--tools') + 1], prompt: args[args.indexOf('--append-system-prompt') + 1] }
+}
+
+test('a read-only extra tool does not mark an agent as a writer', async t => {
+  const gitOnly = await launchArgs(t, 'read,grep,glob,ls,git', 'inspect history')
+  assert.equal(gitOnly.tools, 'read,grep,glob,ls,git')
+  assert.match(gitOnly.prompt, /You cannot change files/)
+})
+
+test('a write tool marks an agent as a writer', async t => {
+  const shell = await launchArgs(t, 'read,grep,glob,ls,bash', 'run a command')
+  assert.match(shell.prompt, /Describe only edits and commands you actually ran/)
+})
+
+test('read-only agents get the git tool', async t => {
+  const builtin = await launchArgs(t, null, 'review history', 'reviewer')
+  assert.equal(builtin.tools, 'read,grep,glob,ls,git')
+  const fromDefault = await launchArgs(t, null, 'inspect history')
+  assert.equal(fromDefault.tools, 'read,grep,glob,ls,git,skill')
 })
 
 test('shutdown stops active children without launching queued work', async t => {

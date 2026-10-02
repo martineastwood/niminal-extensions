@@ -3,8 +3,9 @@
 Give the model, and yourself, isolated subagents. Each run starts a fresh
 headless niminal session, works on one task, and returns a report plus its
 token usage. Built-in agents stay read-only. Agent files can opt into write
-tools (`edit`, `write`, `git`, `bash`) via frontmatter, and optional `cwd` or
-`worktree: true` isolates writers under `.niminal/worktrees/`.
+tools (`edit`, `write`, `bash`) or read-only extras such as `git` via
+frontmatter, and optional `cwd` or `worktree: true` isolates writers under
+`.niminal/worktrees/`.
 
 Subagents see only the task you give them, never the main conversation, so a
 task must be self-contained. Every subagent is asked to finish with a report: a
@@ -118,24 +119,24 @@ active, the Subagents panel shows progress.
 
 | Agent | Tools | Use it for |
 | --- | --- | --- |
-| `scout` | `read`, `grep`, `glob`, `ls` | Fast codebase recon: paths, entry points, risks |
+| `scout` | `read`, `grep`, `glob`, `ls`, `git` | Fast codebase recon: paths, entry points, risks |
 | `general` | scout tools plus `skill` | Multi-step research that should consult your skills |
-| `planner` | `read`, `grep`, `glob`, `ls` | Read-only implementation plans with verification steps |
-| `reviewer` | `read`, `grep`, `glob`, `ls` | Code review: bugs, tests, edge cases, simplicity |
-| `oracle` | `read`, `grep`, `glob`, `ls` | Second opinion before acting; challenge assumptions |
+| `planner` | `read`, `grep`, `glob`, `ls`, `git` | Read-only implementation plans with verification steps |
+| `reviewer` | `read`, `grep`, `glob`, `ls`, `git` | Code review: bugs, tests, edge cases, simplicity |
+| `oracle` | `read`, `grep`, `glob`, `ls`, `git` | Second opinion before acting; challenge assumptions |
 
 All built-in agents are read-only. Agent files may list write tools. No agent
 can start further subagents (`subagent` / `subagent_result` are blocked).
 
 ### Writable agents and worktrees
 
-Omit `tools` for the default read-only set (`read,grep,glob,ls,skill`). To allow
+Omit `tools` for the default read-only set (`read,grep,glob,ls,git,skill`). To allow
 edits, set frontmatter such as:
 
 ```markdown
 ---
 description: Implements a scoped change in an isolated worktree
-tools: read,grep,glob,ls,edit,write,git,bash,skill
+tools: read,grep,glob,ls,edit,write,bash,skill
 ---
 ```
 
@@ -175,7 +176,7 @@ concrete bugs, missing tests, and anything you could not verify.
 | Field | Required | Meaning |
 | --- | --- | --- |
 | `description` | no | Shown to the model next to the agent's tools, which is how it picks an agent. Defaults to the prompt's first line |
-| `tools` | no | Comma-separated tools. Defaults to read-only (`read,grep,glob,ls,skill`). May include `edit,write,git,bash`. Nested `subagent` tools are dropped |
+| `tools` | no | Comma-separated tools. Defaults to the read-only set (`read,grep,glob,ls,git,skill`). May add the write tools `edit,write,bash`. Nested `subagent` tools are dropped |
 | `model` | no | Model for this agent. Used after `models.<name>.<provider>` in `subagents.json` |
 | `thinking` | no | Reasoning level for this agent: `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, or `max`. Defaults to `thinking` in `subagents.json`, then your session level |
 | `max_steps` | no | Tool-loop cap for this agent, e.g. `40`. Defaults to `max_steps` in `subagents.json`, then your niminal config |

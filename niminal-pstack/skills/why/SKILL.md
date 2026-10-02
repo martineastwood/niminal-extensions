@@ -79,9 +79,9 @@ Aim for a complete **coverage map**, not a minimal one. Document the null, don't
 Launch all matching investigators in a single message so they run concurrently. Don't ask one agent to cover multiple MCPs.
 
 Subagent config (each):
-- `agent`: `generalPurpose`
+- `agent`: `general` (read-only, and the only built-in with the `git` tool plus `skill`)
 - `model`: the `why investigators` line, default `grok-4.7-xhigh-fast`
-- `readonly`: `false` (agent mode). **Do not use readonly/Ask mode.** It strips MCP access, which disables MCP-backed investigators entirely. Investigators still shouldn't write anything.
+- Investigators have no shell and cannot call MCP tools, so `gh` lookups (PR bodies, review comments, linked issues) stay parent-side and reach the investigator through the Step 2 seed.
 
 Each investigator gets:
 1. The base prompt from `references/investigator-prompt.md`
@@ -114,7 +114,7 @@ Each entry names the category and the kind of "why" it uniquely surfaces. Use it
 
 Only skip with an **explicit, written justification** that goes in the final "Sources Consulted" section. Two valid reasons:
 
-- **No MCP is available for that category** in this environment. Flag this as a gap, not a choice. Example: "Real-time team chat skipped. No matching MCP available, so the conversational record was not searchable."
+- **No MCP is available for that category**, either because none is configured or because an investigator cannot reach one (subagents have an explicit tool allowlist). Flag this as a gap, not a choice. Example: "Real-time team chat skipped. No matching MCP available, so the conversational record was not searchable."
 - **The source is provably irrelevant**, not just "probably irrelevant." A high bar. Example: "Error / exception tracking skipped. Target is a build-time script with no runtime code path."
 
 If your scope assessment suggests a single-commit trivial target where the PR description already contains the complete answer, you may answer inline **only after** confirming all seven available category searches would be redundant. Say so explicitly. This should be rare.
@@ -123,9 +123,9 @@ If your scope assessment suggests a single-commit trivial target where the PR de
 
 Spawn one synthesizer subagent:
 
-- `agent`: `generalPurpose`
+- `agent`: `general`
 - `model`: the `why synthesizer` line, default `claude-opus-5-5-max`
-- `readonly`: `false` (agent mode). The synthesizer's quality check spot-verifies citations, which can require MCP access. Readonly/Ask mode strips MCPs and defeats that.
+- The synthesizer spot-verifies citations with `read`, `grep`, and `git`.
 
 The synthesizer gets:
 1. The investigator findings, including any null results and any categories skipped with justification

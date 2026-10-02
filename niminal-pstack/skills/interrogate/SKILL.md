@@ -41,9 +41,8 @@ Launch all reviewers in a single message using the subagent tool. Use the `inter
 | Reviewer C | `grok-4.7-xhigh-fast` |
 
 For each reviewer:
-- `agent`: `generalPurpose`
+- `agent`: `reviewer` (read-only: `read`, `grep`, `glob`, `ls`)
 - `model`: the configured `interrogate reviewers` entry, or the table default with no configured line. For an `auto` or `inherit-parent` entry, omit `model` so that reviewer runs on the parent model.
-- `readonly`: `true`
 
 If the subagent tool rejects a configured entry, run that reviewer on the table default of its family and say so. Families go by prefix: `claude-*`, `gpt-*`, and `grok-*`. With no family match, use Reviewer A's default. If it rejects a table default, check the valid slugs in the subagent tool's error message, pick the closest equivalent (prefer the highest-reasoning tier of the same family), spawn with it, and open a separate PR to update the default table. Do not block the review on the slug issue. Never treat an alias entry as a rejected slug or apply either fallback to it.
 
